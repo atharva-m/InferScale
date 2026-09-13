@@ -1,0 +1,87 @@
+--- a/internal/extensionserver/post_translate_modify.go
++++ b/internal/extensionserver/post_translate_modify.go
+@@ -507,7 +507,12 @@
+ 			continue
+ 		}
+ 		var poolFilters []*httpconnectionmanagerv3.HttpFilter
++		queuedPoolFilters := make(map[string]struct{}, len(inferencePools))
+ 		for _, pool := range inferencePools {
++			filterName := httpFilterNameForInferencePool(pool)
++			if _, queued := queuedPoolFilters[filterName]; queued {
++				continue
++			}
+ 			_, baIndex, searchErr := searchInferencePoolInFilterChain(pool, httpConManager.HttpFilters)
+ 			if searchErr != nil {
+ 				s.log.Error(searchErr, "failed to find an inference pool ext proc filter")
+@@ -522,6 +527,10 @@
+ 					continue
+ 				}
+ 				poolFilters = append(poolFilters, eppExtProc)
++				// Several route rules may reference the same pool. These filters
++				// are appended to the HCM after the loop, so the existing-filter
++				// search above cannot see a copy already queued in this pass.
++				queuedPoolFilters[filterName] = struct{}{}
+ 			}
+ 		}
+ 		if len(poolFilters) != 0 {
+--- a/internal/extensionserver/extensionserver_test.go
++++ b/internal/extensionserver/extensionserver_test.go
+@@ -806,6 +806,58 @@
+ 		// Should identify and process InferencePool routes.
+ 	})
+ 
++	t.Run("shared pool across four route rules", func(t *testing.T) {
++		listener := createListener("test-listener", "test-route-config")
++		hcm := &httpconnectionmanagerv3.HttpConnectionManager{}
++		require.NoError(t, listener.DefaultFilterChain.Filters[0].GetTypedConfig().UnmarshalTo(hcm))
++		hcm.HttpFilters = append([]*httpconnectionmanagerv3.HttpFilter{
++			{Name: "envoy.filters.http.ext_authz"},
++		}, hcm.HttpFilters...)
++		listener.DefaultFilterChain.Filters[0].ConfigType = &listenerv3.Filter_TypedConfig{TypedConfig: mustToAny(t, hcm)}
++
++		var poolRoutes, originalPoolRoutes []*routev3.Route
++		for _, name := range []string{"interactive", "standard", "batch", "default"} {
++			route := createRouteWithInferencePool(name)
++			poolRoutes = append(poolRoutes, route)
++			originalPoolRoutes = append(originalPoolRoutes, proto.Clone(route).(*routev3.Route))
++		}
++		normalRoute := &routev3.Route{Name: "normal-route"}
++		routes := []*routev3.RouteConfiguration{{
++			Name: "test-route-config",
++			VirtualHosts: []*routev3.VirtualHost{{
++				Name:   "test-vh",
++				Routes: append(poolRoutes, normalRoute),
++			}},
++		}}
++		const poolFilterName = "envoy.filters.http.ext_proc/endpointpicker/test-pool_test-ns_ext_proc"
++
++		// Verify both the first translation and a repeated translation. Every
++		// priority rule must share one EPP stream, with authorization first.
++		for range 2 {
++			require.NoError(t, s.maybeModifyListenerAndRoutes([]*listenerv3.Listener{listener}, routes))
++			hcm.Reset()
++			require.NoError(t, listener.DefaultFilterChain.Filters[0].GetTypedConfig().UnmarshalTo(hcm))
++			require.Len(t, hcm.HttpFilters, 3)
++			require.Equal(t, "envoy.filters.http.ext_authz", hcm.HttpFilters[0].Name)
++			require.Equal(t, poolFilterName, hcm.HttpFilters[1].Name)
++			require.Equal(t, "envoy.filters.http.router", hcm.HttpFilters[2].Name)
++
++			epp := &extprocv3.ExternalProcessor{}
++			require.NoError(t, hcm.HttpFilters[1].GetTypedConfig().UnmarshalTo(epp))
++			require.False(t, epp.FailureModeAllow)
++			require.False(t, epp.AllowModeOverride)
++			require.Equal(t, extprocv3.ProcessingMode_FULL_DUPLEX_STREAMED, epp.ProcessingMode.RequestBodyMode)
++			require.Equal(t, extprocv3.ProcessingMode_FULL_DUPLEX_STREAMED, epp.ProcessingMode.ResponseBodyMode)
++			for i, route := range poolRoutes {
++				require.True(t, proto.Equal(originalPoolRoutes[i], route), "pool route %s was changed", route.Name)
++			}
++			disabled := &extprocv3.ExtProcPerRoute{}
++			require.NotNil(t, normalRoute.TypedPerFilterConfig[poolFilterName])
++			require.NoError(t, normalRoute.TypedPerFilterConfig[poolFilterName].UnmarshalTo(disabled))
++			require.True(t, disabled.GetDisabled(), "non-pool route must keep EPP disabled")
++		}
++	})
++
+ 	t.Run("multiple listeners with different route configs", func(_ *testing.T) {
+ 		listeners := []*listenerv3.Listener{
+ 			createListener("listener1", "route-config1"),

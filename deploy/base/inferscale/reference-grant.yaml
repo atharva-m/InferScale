@@ -1,0 +1,19 @@
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-inferscale-gateway
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: inferscale-gateway
+    - group: gateway.envoyproxy.io
+      kind: SecurityPolicy
+      namespace: inferscale-gateway
+  to:
+    - group: ""
+      kind: Service
+      name: inferscale-api
+    - group: ""
+      kind: Service
+      name: inferscale-admission

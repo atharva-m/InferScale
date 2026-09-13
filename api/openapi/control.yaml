@@ -1,0 +1,26 @@
+openapi: 3.1.0
+info:
+  title: InferScale Control API
+  version: 1.0.0-alpha.1
+  description: Source view for the tenant-scoped management API. The release bundle is openapi.yaml.
+servers:
+  - url: https://api.inferscale.local
+security:
+  - bearerAPIKey: []
+paths:
+  /healthz:
+    $ref: ./openapi.yaml#/paths/~1healthz
+  /v1/deployments:
+    $ref: ./openapi.yaml#/paths/~1v1~1deployments
+  /v1/deployments/{id}:
+    $ref: ./openapi.yaml#/paths/~1v1~1deployments~1{id}
+  /v1/deployments/{id}/benchmarks:
+    $ref: ./openapi.yaml#/paths/~1v1~1deployments~1{id}~1benchmarks
+  /v1/deployments/{id}/metrics:
+    $ref: ./openapi.yaml#/paths/~1v1~1deployments~1{id}~1metrics
+  /v1/operations/{id}:
+    $ref: ./openapi.yaml#/paths/~1v1~1operations~1{id}
+components:
+  securitySchemes:
+    bearerAPIKey:
+      $ref: ./openapi.yaml#/components/securitySchemes/bearerAPIKey

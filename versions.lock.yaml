@@ -1,0 +1,112 @@
+schemaVersion: 1
+resolvedAt: "2026-08-22"
+go:
+  version: 1.26.5
+  buildImageDigest: sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2
+  runtimeImageDigest: sha256:1b7b9f0f0e0a1d2155f531db587cc48ec26aaf97ab64364225f5bf18a054e66a
+python:
+  modelcacheBaseVersion: 3.11.13-slim-bookworm
+  modelcacheBaseDigest: sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1
+  benchmarkRunnerBaseVersion: 3.11.13-slim-bookworm
+  benchmarkRunnerBaseDigest: sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1
+  benchmarkRunnerPyYAMLVersion: 6.0.2
+  benchmarkRunnerGuideLLMVersion: 0.7.0
+components:
+  k3d:
+    version: v5.8.3
+    linuxAMD64SHA256: dbaa79a76ace7f4ca230a1ff41dc7d8a5036a8ad0309e9c54f9bf3836dbe853e
+  kubernetes:
+    version: v1.36.2
+    k3sImage: rancher/k3s:v1.36.2-k3s1
+  envoyGateway:
+    version: v1.8.0
+    manifestURL: https://github.com/envoyproxy/gateway/releases/download/v1.8.0/install.yaml
+    manifestSHA256: 9ca6b723eea2771cd806e5ae4372ba941b158e0205335501736aa4c886af7248
+    manifestControllerImage: envoyproxy/gateway:v1.8.0
+    image: docker.io/envoyproxy/gateway
+    imageDigest: sha256:a9b4c4d8a402e8c007b74f2796587a6fb33d8baba46094f17c8a6f233e46d609
+    dataPlaneImage: docker.io/envoyproxy/envoy:distroless-v1.38.0
+    dataPlaneImageDigest: sha256:a7a56545102f7a682e0cafea2c9b8448af1b09ebb710eab688dfb931e3ec7ff6
+    manifestRateLimitImage: docker.io/envoyproxy/ratelimit:ff287602
+    rateLimitImage: docker.io/envoyproxy/ratelimit:ff287602
+    rateLimitImageDigest: sha256:f9df277f4c61459f6b26e06e0eb1f511e4da3c67ce133a39bd97a12dc5885eea
+  gatewayAPI:
+    version: v1.5.1
+    manifestURL: https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.1/standard-install.yaml
+    manifestSHA256: 751002b3b91a87f7ae3bd2517c79a47a8d7ed6702901808a1cf9bd97d284f9b8
+  gatewayAPIInferenceExtension:
+    version: v1.5.0
+    apiVersion: inference.networking.k8s.io/v1
+    manifestURL: https://github.com/kubernetes-sigs/gateway-api-inference-extension/releases/download/v1.5.0/v1-manifests.yaml
+    manifestSHA256: cd7cc63149943627f92d401991886a631d938de28edb416312c443a1b7f42ded
+  llmd:
+    version: v0.8.1
+    endpointPickerVersion: v0.9.0
+    objectiveCRDURL: https://raw.githubusercontent.com/llm-d/llm-d-router/v0.9.0/config/crd/bases/llm-d.ai_inferenceobjectives.yaml
+    objectiveCRDSHA256: c1e763412fcbe2b55e9282850156269a10053be2d052547cb80a2ca639c09990
+    endpointPickerImage: ghcr.io/llm-d/llm-d-router-endpoint-picker
+    endpointPickerDigest: sha256:873179822ab0895a37ea09f2112ca39a6ae50a26612561c8bfad7f9a8c5af6f5
+    objectiveAPIVersion: llm-d.ai/v1alpha2
+    configAPIVersion: llm-d.ai/v1alpha1
+  keda:
+    version: v2.20.1
+    manifestURL: https://github.com/kedacore/keda/releases/download/v2.20.1/keda-2.20.1-core.yaml
+    manifestSHA256: 47371ce4343c26c2e65643e2ee87a5b4a90a956cc1e6a6236db8579235da3504
+    manifestOperatorImage: ghcr.io/kedacore/keda:2.20.1
+    image: ghcr.io/kedacore/keda
+    imageDigest: sha256:8888d1896d316c9e087ce0ca3b72bd945dfbad6f3ef2d64ca24ee394feccc023
+    manifestMetricsServerImage: ghcr.io/kedacore/keda-metrics-apiserver:2.20.1
+    metricsServerImage: ghcr.io/kedacore/keda-metrics-apiserver
+    metricsServerImageDigest: sha256:ba32172082a2ff935d5b62ffa0bd0698424d373b55c5cae0846db057e237b28e
+  vllm:
+    version: v0.23.0
+    image: docker.io/vllm/vllm-openai
+    imageDigest: sha256:6d8429e38e3747723ca07ee1b17972e09bb9c51c4032b266f24fb1cc3b22ed8f
+  tensorrtLLM:
+    # v1.2 removed the TensorRT engine backend; v1 requires a measured real
+    # engine comparison rather than trtllm-serve's PyTorch fallback.
+    version: v1.0.0
+    image: nvcr.io/nvidia/tensorrt-llm/release
+    imageDigest: sha256:e0d966e2daec1827046dd30c6143b39c947ef06ed3fb9ef9469c83a8643b29d7
+  prometheusOperator:
+    version: v0.93.0
+    serviceMonitorCRDURL: https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/v0.93.0/example/prometheus-operator-crd/monitoring.coreos.com_servicemonitors.yaml
+    serviceMonitorCRDSHA256: a99047972c9dd7679ce2050b9968e8a08773492e671b3e17abd476d42aa78a32
+    podMonitorCRDURL: https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/v0.93.0/example/prometheus-operator-crd/monitoring.coreos.com_podmonitors.yaml
+    podMonitorCRDSHA256: 45a93443daa687d3654f7e9631909ff7edcdf3ec09c5e60251b74aa2722aee5d
+  prometheus:
+    version: v3.12.0
+    imageDigest: sha256:69f5241418838263316593f7274a304b095c40bcf22e57272865da91bd60a8ac
+  grafana:
+    version: 13.1.0
+    imageDigest: sha256:121a7a9ece6dc10b969f1f96eed64b4f07dfac0d0b8abc070f7cb83bbde86f63
+  opentelemetryCollector:
+    version: 0.158.0
+    imageDigest: sha256:c5918f78992ee73b0d6f0e599423ac5ec52dd5d9726733114d6eca53d5a32ed5
+  tempo:
+    version: 2.8.1
+    imageDigest: sha256:bc9245fe3da4e63dc4c6862d9c2dad9bcd8be13d0ba4f7705fa6acda4c904d0e
+  postgres:
+    version: 16.9-alpine
+    imageDigest: sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7
+  valkey:
+    version: 8.0.2-alpine
+    imageDigest: sha256:752ba000a58bc8925d11ee863a39b5225617cd2cb3dbc9ec8ac65268b65ebb6d
+conformance:
+  status: pending
+  requiredSuite: tests/conformance/gateway
+  requiredFeatures:
+    - external-authorization
+    - full-duplex-ext-proc
+    - inference-pool-backends
+    - backend-request-header-modifier
+    - weighted-backends
+    - fractional-request-mirror
+    - url-rewrite
+    - trace-continuity
+policy:
+  requireChecksummedDependencyManifests: true
+  requireDigestPinnedDependencyWorkloads: true
+  requireDigestsOutsideDevelopment: true
+  requireGatewayConformanceEvidence: true
+  blockReleaseWhileConformancePending: true

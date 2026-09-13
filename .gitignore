@@ -1,0 +1,39 @@
+# Go
+/bin/
+/dist/
+/coverage/
+*.coverprofile
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+
+# Environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+kubeconfig*
+
+# Generated benchmark data
+benchmarks/results/*
+!benchmarks/results/.gitignore
+benchmarks/artifacts/
+tests/conformance/gateway/evidence.json
+
+# Infrastructure state
+**/.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+
+# Editors / operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

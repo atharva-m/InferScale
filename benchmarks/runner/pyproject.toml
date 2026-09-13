@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inferscale-bench"
+version = "0.1.0"
+description = "Reproducible InferScale benchmark orchestration"
+requires-python = ">=3.10"
+dependencies = ["PyYAML==6.0.2", "guidellm[recommended]==0.7.0"]
+
+[project.optional-dependencies]
+analysis = ["matplotlib>=3.8,<4"]
+test = ["pytest>=8,<9"]
+dev = ["pytest>=8,<9", "ruff>=0.12,<1", "mypy>=1.17,<2", "types-PyYAML>=6.0.12"]
+
+[project.scripts]
+inferscale-bench = "inferscale_bench.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["inferscale_bench*"]
+
+[tool.setuptools.package-data]
+inferscale_bench = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

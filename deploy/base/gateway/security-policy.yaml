@@ -1,0 +1,28 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: inferscale-external-authorization
+  namespace: inferscale-gateway
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: inferscale
+  extAuth:
+    grpc:
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: inferscale-admission
+          namespace: inferscale-system
+          port: 9001
+    headersToExtAuth:
+      - authorization
+      - x-request-id
+      - traceparent
+      - tracestate
+    bodyToExtAuth:
+      maxRequestBytes: 1048576
+    failOpen: false
+    recomputeRoute: true
+    statusOnError: 503

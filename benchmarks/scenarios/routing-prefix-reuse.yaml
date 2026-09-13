@@ -1,0 +1,36 @@
+schema_version: 1
+name: qwen3-8b-routing-prefix-reuse
+measurement_tool: inferscale-native-http-v1
+publishable: false
+target:
+  base_url: https://api.inferscale.example
+  deployment: qwen-chat
+  deployment_id_env: INFERSCALE_DEPLOYMENT_ID
+  api_key_env: INFERSCALE_API_KEY
+  request_timeout_s: 300
+deployment:
+  model: Qwen/Qwen3-8B
+  model_revision: b968826d9c46dd6066d109eabc6255188de91218
+  backend: vllm
+  backend_version: 0.23.0
+  precision: bf16
+  quantization: none
+  gpu_type: RTX_5090
+  gpu_count: 1
+  tensor_parallelism: 1
+  prefix_cache: true
+  max_model_len: 8192
+workload:
+  input_tokens: 2048
+  output_tokens: 128
+  concurrency: 16
+  requests: 500
+  dataset: ../workloads/prefix-reuse.jsonl
+  seed: 42
+cache_state: process-warm
+routing: {policy: prefix-aware}
+experiment:
+  compare_policies: [round-robin, load-aware, prefix-aware]
+  require_worker_distribution: true
+  require_prefix_routing_difference: true
+metadata: {provider: set-at-run-time}

@@ -1,0 +1,518 @@
+openapi: 3.1.0
+info:
+  title: InferScale API
+  version: 1.0.0-alpha.1
+  description: Tenant-scoped control and OpenAI-compatible text-generation APIs.
+servers:
+  - url: https://api.inferscale.local
+security:
+  - bearerAPIKey: []
+paths:
+  /healthz:
+    get:
+      security: []
+      operationId: health
+      responses:
+        '200': {description: Process is alive}
+  /v1/deployments:
+    post:
+      operationId: createDeployment
+      description: Persists desired state and queues Kubernetes reconciliation.
+      x-inferscale-scope: deployments:write
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateDeploymentRequest'}
+      responses:
+        '202':
+          description: Desired state accepted
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/DeploymentMutation'}}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Invalid'}
+        '429': {$ref: '#/components/responses/QuotaExceeded'}
+    get:
+      operationId: listDeployments
+      x-inferscale-scope: deployments:read
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Tenant-owned deployments only
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/Deployment'}}
+                  next_cursor: {type: string}
+  /v1/deployments/{id}:
+    parameters:
+      - $ref: '#/components/parameters/DeploymentID'
+    get:
+      operationId: getDeployment
+      x-inferscale-scope: deployments:read
+      responses:
+        '200':
+          description: Deployment
+          headers:
+            ETag: {schema: {type: string}, description: Quoted desired-state generation}
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/Deployment'}}
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      operationId: updateDeployment
+      description: Applies JSON Merge Patch to the current desired spec using optimistic ETag matching. Serving-contract changes create a candidate revision.
+      x-inferscale-scope: deployments:write
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: {type: object, additionalProperties: true}
+      responses:
+        '202':
+          description: Updated desired state accepted
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/DeploymentMutation'}}
+        '412': {$ref: '#/components/responses/PreconditionFailed'}
+        '428': {$ref: '#/components/responses/PreconditionRequired'}
+        '422': {$ref: '#/components/responses/Invalid'}
+    delete:
+      operationId: deleteDeployment
+      x-inferscale-scope: deployments:write
+      parameters:
+        - name: expected_generation
+          in: query
+          schema: {type: integer, minimum: 1}
+      responses:
+        '202':
+          description: Deletion queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: {operation: {$ref: '#/components/schemas/Operation'}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /v1/deployments/{id}/benchmarks:
+    parameters:
+      - $ref: '#/components/parameters/DeploymentID'
+    post:
+      operationId: createBenchmark
+      description: Queues a benchmark against the sole immutable stable revision. The deployment must be fully reconciled at its current generation, Ready, and have no candidate rollout in progress.
+      x-inferscale-scope: benchmarks:run
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateBenchmarkRequest'}
+      responses:
+        '202':
+          description: Benchmark queued
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/BenchmarkRun'}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Invalid'}
+    get:
+      operationId: listBenchmarks
+      x-inferscale-scope: benchmarks:read
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Tenant-owned benchmark runs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/BenchmarkRun'}}
+                  next_cursor: {type: string}
+  /v1/deployments/{id}/metrics:
+    get:
+      operationId: getDeploymentMetrics
+      x-inferscale-scope: deployments:read
+      parameters:
+        - $ref: '#/components/parameters/DeploymentID'
+        - {name: since, in: query, schema: {type: string, format: date-time}}
+        - {name: until, in: query, schema: {type: string, format: date-time}}
+      responses:
+        '200':
+          description: Bounded Prometheus-derived summary; raw time series remain in Prometheus.
+          content:
+            application/json: {schema: {type: object, additionalProperties: true}}
+  /v1/operations/{id}:
+    get:
+      operationId: getOperation
+      x-inferscale-scope: deployments:read
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Asynchronous mutation status
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/Operation'}}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /v1/deployments/{deployment_id}/chat/completions:
+    post:
+      operationId: createChatCompletion
+      description: Gateway-hosted OpenAI-compatible, text-only inference endpoint.
+      parameters:
+        - name: deployment_id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ChatCompletionRequest'}
+      responses:
+        '200':
+          description: JSON completion or `text/event-stream` chunks when stream=true
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/ChatCompletion'}}
+            text/event-stream: {schema: {type: string}}
+        '400':
+          description: Invalid text-only OpenAI request or model mismatch
+          content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}
+        '401':
+          description: Missing or invalid API key
+          content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}
+        '403':
+          description: API key lacks inference scope
+          content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409':
+          description: A run-scoped benchmark target changed during measurement
+          content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}
+        '429': {$ref: '#/components/responses/QuotaExceeded'}
+        '503': {$ref: '#/components/responses/ServiceUnavailable'}
+components:
+  securitySchemes:
+    bearerAPIKey:
+      type: http
+      scheme: bearer
+      bearerFormat: InferScale API key
+  parameters:
+    DeploymentID:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    Limit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: {type: string, minLength: 1, maxLength: 200}
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      schema: {type: string, example: '"3"'}
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque keyset cursor returned as `next_cursor`.
+      schema: {type: string}
+  responses:
+    NotFound:
+      description: Resource not found or not owned by the authenticated tenant
+      content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}
+    Conflict:
+      description: Resource state, idempotency-key, name, or generation conflict
+      content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}
+    Invalid:
+      description: Invalid request or unsupported runtime combination
+      content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}
+    PreconditionFailed:
+      description: If-Match does not match the current deployment generation
+      content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}
+    PreconditionRequired:
+      description: If-Match is required
+      content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}
+    QuotaExceeded:
+      description: Tenant rate, concurrency, deployment, GPU, or queue quota exceeded
+      headers:
+        Retry-After: {schema: {type: integer}}
+      content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}
+    ServiceUnavailable:
+      description: A required dependency is unavailable
+      content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}
+  schemas:
+    Problem:
+      type: object
+      required: [type, title, status, code, request_id]
+      properties:
+        type: {type: string, format: uri}
+        title: {type: string}
+        status: {type: integer}
+        code: {type: string}
+        detail: {type: string}
+        request_id: {type: string}
+        violations:
+          type: array
+          items:
+            type: object
+            required: [message]
+            properties:
+              field: {type: string}
+              message: {type: string}
+    CreateDeploymentRequest:
+      type: object
+      additionalProperties: false
+      required: [name, model, gpu, max_model_len, max_replicas, admission]
+      properties:
+        name: {type: string, pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'}
+        model: {$ref: '#/components/schemas/ModelSpec'}
+        backend: {$ref: '#/components/schemas/Backend'}
+        gpu:
+          type: object
+          required: [type, count]
+          properties:
+            type: {type: string, example: RTX_5090}
+            count: {type: integer, enum: [1, 2, 4]}
+        precision: {type: string, enum: [bf16, fp8], default: bf16}
+        quantization: {type: string, enum: [none, awq], default: none}
+        tensor_parallelism: {type: integer, enum: [1, 2, 4]}
+        max_model_len: {type: integer, minimum: 1}
+        prefix_caching: {type: boolean, default: true}
+        min_replicas: {type: integer, minimum: 0, default: 1}
+        max_replicas: {type: integer, minimum: 1}
+        slo:
+          type: object
+          required: [ttft_p95_ms, tpot_p95_ms]
+          properties:
+            ttft_p95_ms: {type: integer, minimum: 1}
+            tpot_p95_ms: {type: integer, minimum: 1}
+        admission: {$ref: '#/components/schemas/AdmissionSpec'}
+        routing: {$ref: '#/components/schemas/RoutingSpec'}
+        rollout: {$ref: '#/components/schemas/RolloutSpec'}
+        observability: {$ref: '#/components/schemas/ObservabilitySpec'}
+    Deployment:
+      type: object
+      required: [id, name, namespace, generation, spec, status, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        namespace: {type: string}
+        generation: {type: integer}
+        spec: {$ref: '#/components/schemas/InferenceDeploymentSpec'}
+        status: {$ref: '#/components/schemas/InferenceDeploymentStatus'}
+        stableRevisionId: {type: string, format: uuid}
+        candidateRevisionId: {type: string, format: uuid}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    DeploymentMutation:
+      type: object
+      required: [deployment, operation]
+      properties:
+        deployment: {$ref: '#/components/schemas/Deployment'}
+        operation: {$ref: '#/components/schemas/Operation'}
+    Operation:
+      type: object
+      required: [id, tenantId, deploymentId, kind, status, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        tenantId: {type: string, format: uuid}
+        deploymentId: {type: string, format: uuid}
+        kind: {type: string, enum: [create, update, delete]}
+        status: {type: string, enum: [accepted, retrying, succeeded, failed]}
+        requestId: {type: string}
+        idempotencyKey: {type: string}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+        completedAt: {type: string, format: date-time}
+        error: {type: string}
+    InferenceDeploymentSpec:
+      type: object
+      additionalProperties: false
+      required: [model, runtime, accelerator, scaling, admission, routing, rollout, observability]
+      properties:
+        model: {$ref: '#/components/schemas/ModelSpec'}
+        runtime: {$ref: '#/components/schemas/RuntimeSpec'}
+        accelerator: {$ref: '#/components/schemas/AcceleratorSpec'}
+        scaling: {$ref: '#/components/schemas/ScalingSpec'}
+        slo: {$ref: '#/components/schemas/SLOSpec'}
+        admission: {$ref: '#/components/schemas/AdmissionSpec'}
+        routing: {$ref: '#/components/schemas/RoutingSpec'}
+        rollout: {$ref: '#/components/schemas/RolloutSpec'}
+        observability: {$ref: '#/components/schemas/ObservabilitySpec'}
+    ModelSpec:
+      type: object
+      required: [uri, revision]
+      properties:
+        uri: {type: string, pattern: '^hf://[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$'}
+        revision: {type: string, pattern: '^[0-9a-f]{40}$'}
+    Backend: {type: string, enum: [auto, vllm, tensorrt-llm], default: auto}
+    RuntimeSpec:
+      type: object
+      required: [backend, precision, tensorParallelism, maxModelLen, prefixCaching]
+      properties:
+        backend: {$ref: '#/components/schemas/Backend'}
+        precision: {type: string, enum: [bf16, fp8]}
+        quantization: {type: string, enum: [none, awq]}
+        tensorParallelism: {type: integer, enum: [1, 2, 4]}
+        maxModelLen: {type: integer, minimum: 1}
+        prefixCaching:
+          type: object
+          required: [enabled]
+          properties: {enabled: {type: boolean}}
+    AcceleratorSpec:
+      type: object
+      required: [vendor, type, count]
+      properties:
+        vendor: {type: string, const: nvidia}
+        type: {type: string}
+        count: {type: integer, enum: [1, 2, 4]}
+    ScalingSpec:
+      type: object
+      required: [minReplicas, maxReplicas, policy]
+      properties:
+        minReplicas: {type: integer, minimum: 0}
+        maxReplicas: {type: integer, minimum: 1}
+        policy: {type: string, const: saturation}
+    SLOSpec:
+      type: object
+      required: [ttft, tpot]
+      properties:
+        ttft: {$ref: '#/components/schemas/MetricSLO'}
+        tpot: {$ref: '#/components/schemas/MetricSLO'}
+    MetricSLO:
+      type: object
+      required: [percentile, targetMs]
+      properties:
+        percentile: {type: integer, minimum: 1, maximum: 100}
+        targetMs: {type: integer, minimum: 1}
+    AdmissionSpec:
+      type: object
+      required: [maxConcurrentRequests, maxQueuedRequests, priorityClass]
+      properties:
+        maxConcurrentRequests: {type: integer, minimum: 1}
+        maxQueuedRequests: {type: integer, minimum: 0}
+        priorityClass: {type: string, enum: [interactive, standard, batch]}
+    RoutingSpec:
+      type: object
+      required: [policy]
+      properties:
+        policy: {type: string, enum: [round-robin, load-aware, prefix-aware], default: load-aware}
+    RolloutSpec:
+      type: object
+      required: [strategy, shadowPercent]
+      properties:
+        strategy: {type: string, const: progressive}
+        shadowPercent: {type: integer, minimum: 0, maximum: 100, default: 10}
+    ObservabilitySpec:
+      type: object
+      required: [tracing]
+      properties: {tracing: {type: boolean, default: true}}
+    InferenceDeploymentStatus:
+      type: object
+      properties:
+        phase: {type: string, enum: [Pending, Prefetching, Deploying, Ready, Updating, Degraded, Failed, Deleting]}
+        observedGeneration: {type: integer}
+        endpoint: {type: object, properties: {url: {type: string, format: uri}}}
+        runtime: {type: object, additionalProperties: true}
+        replicas: {type: object, properties: {desired: {type: integer}, ready: {type: integer}}}
+        revision:
+          type: object
+          properties:
+            stable: {type: string}
+            candidate: {type: string}
+            stableId: {type: string, format: uuid}
+            candidateId: {type: string, format: uuid}
+        cache: {type: object, properties: {weights: {type: string}, workersWarm: {type: integer}}}
+        rollout:
+          type: object
+          properties:
+            stage: {type: string}
+            candidateWeight: {type: integer}
+            regressionWindows: {type: integer, minimum: 0}
+            lastRegressionWindow: {type: string, format: date-time}
+        conditions: {type: array, items: {type: object, additionalProperties: true}}
+    CreateBenchmarkRequest:
+      type: object
+      additionalProperties: false
+      required: [scenario, configuration, rental_price_usd_per_gpu_hour]
+      properties:
+        scenario: {type: string}
+        configuration: {type: object, additionalProperties: true}
+        rental_price_usd_per_gpu_hour: {type: number, exclusiveMinimum: 0}
+    BenchmarkRun:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        deploymentId: {type: string, format: uuid}
+        revisionId: {type: string, format: uuid}
+        scenario: {type: string}
+        scenarioDigest: {type: string}
+        state: {type: string, enum: [queued, running, succeeded, failed]}
+    ChatCompletionRequest:
+      type: object
+      additionalProperties: false
+      required: [model, messages]
+      properties:
+        model:
+          type: string
+          description: Tenant-visible deployment name; stable across immutable revisions.
+        messages:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [role, content]
+            properties:
+              role: {type: string, enum: [system, user, assistant]}
+              content: {type: string, minLength: 1}
+        stream: {type: boolean, default: false}
+        stream_options:
+          type: object
+          additionalProperties: false
+          required: [include_usage]
+          properties:
+            include_usage: {type: boolean}
+        max_tokens: {type: integer, minimum: 1}
+        temperature: {type: number, minimum: 0, maximum: 2}
+        top_p: {type: number, exclusiveMinimum: 0, maximum: 1}
+        stop:
+          oneOf:
+            - {type: string, minLength: 1}
+            - {type: array, minItems: 1, maxItems: 4, items: {type: string, minLength: 1}}
+        seed: {type: integer, format: int64}
+    ChatCompletion:
+      type: object
+      properties:
+        id: {type: string}
+        object: {type: string, const: chat.completion}
+        created: {type: integer}
+        choices: {type: array, items: {type: object, additionalProperties: true}}
+        usage:
+          type: object
+          properties:
+            prompt_tokens: {type: integer}
+            completion_tokens: {type: integer}
+            total_tokens: {type: integer}

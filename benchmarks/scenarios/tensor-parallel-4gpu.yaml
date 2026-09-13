@@ -1,0 +1,33 @@
+schema_version: 1
+name: qwen3-8b-vllm-tp4
+measurement_tool: guidellm-0.7.0
+publishable: true
+target:
+  base_url: https://api.inferscale.example
+  deployment: qwen-chat
+  deployment_id_env: INFERSCALE_DEPLOYMENT_ID
+  api_key_env: INFERSCALE_API_KEY
+  request_timeout_s: 600
+deployment:
+  model: Qwen/Qwen3-8B
+  model_revision: b968826d9c46dd6066d109eabc6255188de91218
+  backend: vllm
+  backend_version: 0.23.0
+  precision: bf16
+  quantization: none
+  gpu_type: RTX_5090
+  gpu_count: 4
+  tensor_parallelism: 4
+  prefix_cache: true
+  max_model_len: 8192
+workload:
+  input_tokens: 2048
+  output_tokens: 256
+  concurrency: 32
+  requests: 500
+  dataset: synthetic
+  seed: 42
+cache_state: process-warm
+routing: {policy: load-aware}
+experiment: {compare_tensor_parallelism: [1, 2, 4]}
+metadata: {provider: set-at-run-time}

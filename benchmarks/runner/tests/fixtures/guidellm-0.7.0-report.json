@@ -1,0 +1,50 @@
+{
+  "metadata": {
+    "version": 2,
+    "guidellm_version": "0.7.0",
+    "python_version": "3.11.13",
+    "platform": "Linux"
+  },
+  "config": {},
+  "benchmarks": [
+    {
+      "type": "generative_benchmark",
+      "start_time": 1780000000.0,
+      "end_time": 1780000001.5,
+      "duration": 1.5,
+      "metrics": {
+        "request_totals": {
+          "successful": 2,
+          "incomplete": 0,
+          "errored": 0,
+          "total": 2
+        }
+      },
+      "requests": {
+        "successful": [
+          {
+            "request_id": "redacted-by-normalizer",
+            "request_latency": 0.12,
+            "prompt_tokens": 8,
+            "output_tokens": 4,
+            "time_to_first_token_ms": 20.0,
+            "time_per_output_token_ms": 5.0,
+            "output_tokens_per_second": 40.0
+          },
+          {
+            "request_id": "redacted-by-normalizer-2",
+            "request_latency": 0.15,
+            "prompt_tokens": 8,
+            "output_tokens": 4,
+            "time_to_first_token_ms": 25.0,
+            "time_per_output_token_ms": 6.0,
+            "output_tokens_per_second": 32.0
+          }
+        ],
+        "incomplete": [],
+        "errored": [],
+        "total": null
+      }
+    }
+  ]
+}

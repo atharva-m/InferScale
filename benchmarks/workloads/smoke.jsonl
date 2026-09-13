@@ -1,0 +1,4 @@
+{"messages":[{"role":"system","content":"Answer concisely and accurately."},{"role":"user","content":"What is continuous batching in an inference server?"}]}
+{"messages":[{"role":"system","content":"Answer concisely and accurately."},{"role":"user","content":"Explain the difference between latency and throughput."}]}
+{"messages":[{"role":"user","content":"List three reasons to pin an immutable model revision."}]}
+{"messages":[{"role":"user","content":"What does time to first token measure?"}]}

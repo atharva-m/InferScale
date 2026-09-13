@@ -1,0 +1,36 @@
+schema_version: 1
+name: qwen3-8b-cache-startup-states
+measurement_tool: inferscale-native-http-v1
+publishable: false
+target:
+  base_url: https://api.inferscale.example
+  deployment: qwen-chat
+  deployment_id_env: INFERSCALE_DEPLOYMENT_ID
+  api_key_env: INFERSCALE_API_KEY
+  request_timeout_s: 900
+deployment:
+  model: Qwen/Qwen3-8B
+  model_revision: b968826d9c46dd6066d109eabc6255188de91218
+  backend: vllm
+  backend_version: 0.23.0
+  precision: bf16
+  quantization: none
+  gpu_type: RTX_5090
+  gpu_count: 1
+  tensor_parallelism: 1
+  prefix_cache: true
+  max_model_len: 8192
+workload:
+  input_tokens: 128
+  output_tokens: 32
+  concurrency: 1
+  requests: 20
+  dataset: ../workloads/smoke.jsonl
+  seed: 31
+cache_state: remote-cold
+routing: {policy: load-aware}
+experiment:
+  phases: [remote-cold, cache-warm, process-warm]
+  record_prefetch_seconds: true
+  record_worker_ready_seconds: true
+metadata: {provider: set-at-run-time}

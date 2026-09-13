@@ -1,0 +1,20 @@
+{
+  "uid": "inferscale-deployment",
+  "title": "InferScale / Deployment",
+  "schemaVersion": 41,
+  "version": 1,
+  "refresh": "15s",
+  "tags": ["inferscale", "deployment"],
+  "panels": [
+    {"id": 1, "title": "Ready", "type": "stat", "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "max(inferscale_deployment_ready{deployment=~\"$deployment\"})", "refId": "A"}]},
+    {"id": 2, "title": "Request rate", "type": "stat", "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum(rate(inferscale_requests_total{deployment=~\"$deployment\",outcome=\"total\"}[5m]))", "refId": "A"}]},
+    {"id": 3, "title": "Error rate", "type": "stat", "gridPos": {"h": 6, "w": 6, "x": 12, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "percentunit"}}, "targets": [{"expr": "sum(rate(inferscale_requests_total{deployment=~\"$deployment\",outcome=\"error\"}[5m])) / clamp_min(sum(rate(inferscale_requests_total{deployment=~\"$deployment\",outcome=\"total\"}[5m])), 0.001)", "refId": "A"}]},
+    {"id": 4, "title": "Allocated GPU seconds / second", "type": "stat", "gridPos": {"h": 6, "w": 6, "x": 18, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum(rate(inferscale_gpu_seconds_total{deployment=~\"$deployment\"}[5m]))", "refId": "A"}]},
+    {"id": 5, "title": "Desired / ready replicas", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum by (revision) (inferscale_deployment_replicas{deployment=~\"$deployment\",state=\"desired\"})", "legendFormat": "{{revision}} desired", "refId": "A"}, {"expr": "sum by (revision) (inferscale_deployment_replicas{deployment=~\"$deployment\",state=\"ready\"})", "legendFormat": "{{revision}} ready", "refId": "B"}]},
+    {"id": 6, "title": "P95 latency by revision", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "s"}}, "targets": [{"expr": "histogram_quantile(0.95, sum by (le, revision) (rate(inferscale_ttft_seconds_bucket{deployment=~\"$deployment\"}[5m])))", "legendFormat": "{{revision}} TTFT", "refId": "A"}, {"expr": "histogram_quantile(0.95, sum by (le, revision) (rate(inferscale_tpot_seconds_bucket{deployment=~\"$deployment\"}[5m])))", "legendFormat": "{{revision}} TPOT", "refId": "B"}]},
+    {"id": 7, "title": "Queue and running requests", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum by (revision) (inferscale_runtime_waiting_requests{deployment=~\"$deployment\"})", "legendFormat": "{{revision}} waiting", "refId": "A"}, {"expr": "sum by (revision) (inferscale_runtime_running_requests{deployment=~\"$deployment\"})", "legendFormat": "{{revision}} running", "refId": "B"}]},
+    {"id": 8, "title": "Tokens / second", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum by (revision, direction) (rate(inferscale_tokens_total{deployment=~\"$deployment\"}[5m]))", "legendFormat": "{{revision}} {{direction}}", "refId": "A"}]}
+  ],
+  "templating": {"list": [{"name": "deployment", "label": "Deployment", "type": "query", "datasource": {"type": "prometheus", "uid": "prometheus"}, "query": {"query": "label_values(inferscale_requests_total, deployment)", "refId": "var"}, "includeAll": false, "multi": false}]},
+  "time": {"from": "now-1h", "to": "now"}
+}

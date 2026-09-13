@@ -1,0 +1,121 @@
+groups:
+  - name: inferscale-runtime-normalization
+    rules:
+      # Stable names consumed by the API, dashboards, usage, and rollouts.
+      # EPP sees the full native streaming response for either runtime. Its
+      # counters/histograms are therefore the backend-neutral accounting and
+      # rollout contract. `total` and `error` are intentionally separate
+      # series; callers must use total as the denominator rather than summing
+      # both values.
+      - record: inferscale_requests_total
+        expr: 'llm_d_epp_request_total'
+        labels: {outcome: total}
+      - record: inferscale_requests_total
+        expr: 'llm_d_epp_request_error_total'
+        labels: {outcome: error}
+      - record: inferscale_tokens_total
+        expr: 'llm_d_epp_request_input_tokens_sum'
+        labels: {direction: input}
+      - record: inferscale_tokens_total
+        expr: 'llm_d_epp_request_output_tokens_sum'
+        labels: {direction: output}
+      - record: inferscale_ttft_seconds_bucket
+        expr: 'llm_d_epp_request_ttft_seconds_bucket'
+      - record: inferscale_tpot_seconds_bucket
+        expr: 'llm_d_epp_request_streaming_tpot_seconds_bucket'
+      # Gateway RequestMirror targets the candidate runtime Service directly,
+      # so Shadow cannot use the EPP counters above. These bounded vLLM-native
+      # series are evaluated only while candidate route weight is zero. An
+      # absent contract (including TensorRT-LLM v1.0) pauses promotion closed.
+      - record: inferscale_shadow_runtime_requests_total
+        expr: 'sum without(finished_reason) (vllm:request_success_total)'
+        labels: {outcome: total}
+      - record: inferscale_shadow_runtime_requests_total
+        expr: 'sum without(finished_reason) (vllm:request_success_total{finished_reason="abort"})'
+        labels: {outcome: error}
+      - record: inferscale_shadow_runtime_ttft_seconds_bucket
+        expr: 'vllm:time_to_first_token_seconds_bucket'
+      - record: inferscale_shadow_runtime_tpot_seconds_bucket
+        expr: 'vllm:inter_token_latency_seconds_bucket'
+      # TensorRT-LLM 1.0 exposes JSON iteration gauges. The InferScale sidecar
+      # translates only those observed gauges; it intentionally cannot create
+      # request counters or latency histograms.
+      - record: inferscale_runtime_running_requests
+        expr: 'vllm:num_requests_running or inferscale_trtllm_active_requests'
+      - record: inferscale_runtime_waiting_requests
+        expr: 'vllm:num_requests_waiting or inferscale_trtllm_queued_requests'
+      - record: inferscale_runtime_kv_cache_utilization_ratio
+        expr: 'vllm:gpu_cache_usage_perc or inferscale_trtllm_kv_cache_utilization_ratio'
+      - record: inferscale_runtime_prefix_cache_hit_ratio
+        expr: 'rate(vllm:prefix_cache_hits_total[5m]) / clamp_min(rate(vllm:prefix_cache_queries_total[5m]), 0.000001)'
+      - record: inferscale_router_flow_control_wait_seconds_bucket
+        expr: 'llm_d_epp_flow_control_request_queue_duration_seconds_bucket'
+      - record: inferscale_request_rejections_total
+        expr: 'llm_d_epp_flow_control_requests_total{outcome="RejectedCapacity"}'
+        labels: {reason: capacity}
+  - name: inferscale-controller-normalization
+    rules:
+      - record: inferscale_reconciliations_total
+        expr: 'controller_runtime_reconcile_total{controller="inferencedeployment"}'
+      - record: inferscale_reconcile_duration_seconds_bucket
+        expr: 'controller_runtime_reconcile_time_seconds_bucket{controller="inferencedeployment"}'
+      - record: inferscale_reconcile_duration_seconds_sum
+        expr: 'controller_runtime_reconcile_time_seconds_sum{controller="inferencedeployment"}'
+      - record: inferscale_reconcile_duration_seconds_count
+        expr: 'controller_runtime_reconcile_time_seconds_count{controller="inferencedeployment"}'
+  - name: inferscale-serving
+    rules:
+      - alert: InferScaleDeploymentUnavailable
+        expr: max by (namespace, deployment) (inferscale_deployment_ready) == 0
+        for: 5m
+        labels: {severity: critical}
+        annotations: {summary: "InferScale deployment {{ $labels.deployment }} is unavailable"}
+      - alert: InferScaleHighRequestFailureRate
+        expr: sum by (namespace, deployment) (rate(inferscale_requests_total{outcome="error"}[5m])) / clamp_min(sum by (namespace, deployment) (rate(inferscale_requests_total{outcome="total"}[5m])), 0.001) > 0.05
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: "Request failure rate exceeds 5%"}
+      - alert: InferScaleQueueSaturated
+        expr: sum by (namespace, deployment) (inferscale_runtime_waiting_requests) > 100
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "Inference request queue is saturated"}
+      - alert: InferScaleWorkerOOM
+        expr: increase(inferscale_runtime_oom_total[10m]) > 0
+        labels: {severity: critical}
+        annotations: {summary: "An inference worker reported an OOM"}
+      - alert: InferScaleWorkerPreempted
+        expr: increase(inferscale_runtime_preemptions_total[10m]) > 0
+        labels: {severity: warning}
+        annotations: {summary: "An inference worker was preempted"}
+      - alert: InferScaleMetricsMissing
+        expr: absent(up{job="annotated-pods"})
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "Annotated workload metrics are missing"}
+      - alert: InferScaleOutboxBacklog
+        expr: inferscale_outbox_pending > 100
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: "InferScale desired-state outbox has more than 100 pending events"}
+      - alert: InferScaleUsageAggregationStalled
+        expr: time() - inferscale_usage_aggregation_last_success_timestamp_seconds > 900
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: "InferScale hourly usage aggregation has not succeeded recently"}
+      - alert: InferScaleUsageGPUAccountingMissing
+        expr: '(sum by (namespace, tenant, deployment, revision) (increase(inferscale_requests_total{outcome="total"}[1h])) > 0) unless on (namespace, tenant, deployment, revision) (sum by (namespace, tenant, deployment, revision) (increase(inferscale_gpu_seconds_total[1h])) > 0)'
+        for: 10m
+        labels: {severity: critical}
+        annotations: {summary: "Serving traffic exists without a matching canonical GPU-seconds counter"}
+  - name: inferscale-gpu
+    rules:
+      - alert: InferScaleGPUXIDError
+        expr: increase(DCGM_FI_DEV_XID_ERRORS[5m]) > 0
+        labels: {severity: critical}
+        annotations: {summary: "NVIDIA GPU XID error detected"}
+      - alert: InferScaleGPUHot
+        expr: DCGM_FI_DEV_GPU_TEMP > 88
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "GPU temperature exceeds 88C"}

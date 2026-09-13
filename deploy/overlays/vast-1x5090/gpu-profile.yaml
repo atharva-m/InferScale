@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inferscale-gpu-profile
+  namespace: inferscale-system
+data:
+  provider: vast
+  expected_gpu_sku: RTX_5090
+  expected_gpu_count: "1"
+  supported_tensor_parallelism: "1"

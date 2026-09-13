@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../remote
+  - gpu-profile.yaml
+configMapGenerator:
+  - name: inferscale-config
+    namespace: inferscale-system
+    behavior: merge
+    literals:
+      - 'INFERSCALE_GPU_NODE_SELECTORS={"RTX_5090":{"inferscale.io/gpu-sku":"RTX_5090"}}'
+generatorOptions:
+  disableNameSuffixHash: true

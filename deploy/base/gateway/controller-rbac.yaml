@@ -1,0 +1,90 @@
+# Envoy Gateway watches tenant routes cluster-wide through its upstream read
+# permissions. Infrastructure writes remain scoped to this namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: inferscale-envoy-infra-manager
+  namespace: inferscale-gateway
+rules:
+  - apiGroups: [""]
+    resources: [serviceaccounts, services, configmaps]
+    verbs: [create, get, list, delete, deletecollection, patch, watch]
+  - apiGroups: [apps]
+    resources: [deployments, daemonsets]
+    verbs: [create, get, list, delete, deletecollection, patch, watch]
+  - apiGroups: [autoscaling]
+    resources: [horizontalpodautoscalers]
+    verbs: [create, get, list, delete, deletecollection, patch, watch]
+  - apiGroups: [policy]
+    resources: [poddisruptionbudgets]
+    verbs: [create, get, list, delete, deletecollection, patch, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: inferscale-envoy-infra-manager
+  namespace: inferscale-gateway
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: inferscale-envoy-infra-manager
+subjects:
+  - kind: ServiceAccount
+    name: envoy-gateway
+    namespace: envoy-gateway-system
+---
+# GatewayNamespace mode also watches proxy infrastructure cluster-wide. The
+# pinned upstream ClusterRole already reads Services, ConfigMaps, Deployments,
+# and DaemonSets, but grants these remaining reads only in the controller's
+# namespace. Namespace Roles cannot authorize cluster-scoped informer lists.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: inferscale-envoy-infra-reader
+rules:
+  - apiGroups: [""]
+    resources: [serviceaccounts]
+    verbs: [get, list, watch]
+  - apiGroups: [autoscaling]
+    resources: [horizontalpodautoscalers]
+    verbs: [get, list, watch]
+  - apiGroups: [policy]
+    resources: [poddisruptionbudgets]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: inferscale-envoy-infra-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: inferscale-envoy-infra-reader
+subjects:
+  - kind: ServiceAccount
+    name: envoy-gateway
+    namespace: envoy-gateway-system
+---
+# GatewayNamespace proxies authenticate their xDS connections with projected
+# service-account tokens. TokenReviews are cluster-scoped, unlike infrastructure.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: inferscale-envoy-token-reviewer
+rules:
+  - apiGroups: [authentication.k8s.io]
+    resources: [tokenreviews]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: inferscale-envoy-token-reviewer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: inferscale-envoy-token-reviewer
+subjects:
+  - kind: ServiceAccount
+    name: envoy-gateway
+    namespace: envoy-gateway-system

@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: inferscale-routing
+  labels:
+    app.kubernetes.io/part-of: inferscale
+    pod-security.kubernetes.io/enforce: restricted

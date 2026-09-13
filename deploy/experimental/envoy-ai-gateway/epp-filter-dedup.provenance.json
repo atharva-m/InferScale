@@ -1,0 +1,38 @@
+{
+  "scope": "nonpublishable local GPU test dependency patch; production lock unchanged",
+  "source_tag": "v0.7.0",
+  "source_archive_sha256": "f553e6d4de2c6bcf314ee5753094b0b9ceb36193c824a3e86269dc4ad1fd42f1",
+  "original_controller_image": "docker.io/envoyproxy/ai-gateway-controller:v0.7.0@sha256:9a85d1916132424ff1b356fd43be4e193ca321aa712c56914f277b74af9553f3",
+  "local_image_tag": "ghcr.io/inferscale/ai-gateway-controller:v0.7.0-local-epp-dedup",
+  "patch_file": "epp-filter-dedup.patch",
+  "patch_sha256": "019568ec4593ae01be11c932fed376af4fbdee1daf037bc025df9b78f6ad449d",
+  "files": {
+    "internal/extensionserver/post_translate_modify.go": {
+      "upstream_sha256": "614d1095520a2fafa61d7b9d53c1ffd05524a98f2c8583148c299428fa64c910",
+      "patched_sha256": "5fca715e3ecabd2be4c8495401725fc8c057013c898facba399da4512f77c873"
+    },
+    "internal/extensionserver/extensionserver_test.go": {
+      "upstream_sha256": "b43709bf8e8cccd81b1cabe63b6885a8172c738a8a65a131687c2dc437d54ba7",
+      "patched_sha256": "8dabf431f9e6f2bc87ff1488719e968670d4170d00f605ad70a951285468673c"
+    }
+  },
+  "module_files_unchanged": {
+    "go.mod": "d41e32f79ff7001e4fbb87cfe024d07da898bb92fbbcc7a3edd394e8db90bfdc",
+    "go.sum": "2a0d48d9c96dc8a025121b8ca4f0c0c0b065977bc867eaa829ecdeefc96d3306"
+  },
+  "dockerfile": "Dockerfile.controller-local",
+  "dockerfile_sha256": "4b64fcfa20eb9662ba559fba8866fb5504b37ad9f0a0282b411526332ec59579",
+  "validation": {
+    "gofmt": "passed",
+    "regression_and_package_tests": "passed; build-addon-dedup.log, package execution 0.150s",
+    "image_build": "passed; serialized capped builder, no module changes",
+    "live_validation": "passed: exactly one EPP filter, unchanged auth401, full local GPU functional smoke local-gpu-20260913T162352Z-a20af79d",
+    "full_gateway_conformance": "not established; documented multi-pool/version limits remain"
+  },
+  "remaining_limits": [
+    "multiple InferencePools per rule unsupported",
+    "EPP ext_proc timeout 300 seconds",
+    "EG 1.8.0/addon EG 1.8.1 matrix remains local experiment"
+  ],
+  "local_image_manifest": "sha256:3a70d6573804c523bd304a543a8af701f474eaea98bfe2daa61c24ebbefed54e"
+}

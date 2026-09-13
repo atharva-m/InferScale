@@ -1,0 +1,75 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: MODEL_PREFETCH_JOB_NAME
+  namespace: TENANT_NAMESPACE
+  labels:
+    app.kubernetes.io/name: inferscale-model-prefetch
+    inferscale.io/deployment: DEPLOYMENT_NAME
+    inferscale.io/revision: DEPLOYMENT_REVISION
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: inferscale-model-prefetch
+        inferscale.io/deployment: DEPLOYMENT_NAME
+        inferscale.io/revision: DEPLOYMENT_REVISION
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: prefetch
+          image: ghcr.io/inferscale/modelcache:VERSION_OR_DIGEST
+          imagePullPolicy: IfNotPresent
+          args:
+            - --uri
+            - MODEL_URI
+            - --revision
+            - MODEL_COMMIT_SHA
+            - --cache-root
+            - /cache
+          env:
+            - name: HF_HUB_DISABLE_TELEMETRY
+              value: "1"
+            - name: INFERSCALE_QUARANTINE_MAX_ENTRIES
+              value: "0"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: model-registry-credentials
+                  key: token
+                  optional: true
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          terminationMessagePolicy: File
+          volumeMounts:
+            - name: model-cache
+              mountPath: /cache
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: model-cache
+          hostPath:
+            path: /var/lib/inferscale/models
+            type: Directory
+        - name: tmp
+          emptyDir: {}

@@ -1,0 +1,41 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+configMapGenerator:
+  - name: inferscale-config
+    namespace: inferscale-system
+    behavior: merge
+    literals:
+      - INFERSCALE_ENV=remote-benchmark
+      - INFERSCALE_LOG_LEVEL=info
+      - INFERSCALE_PUBLIC_BASE_URL=http://release-render-required.invalid
+      # Fail-closed benchmark authority sentinels. The release renderer replaces
+      # every value with explicit, validated operator input before apply.
+      - INFERSCALE_BENCHMARK_PROVIDER=set-at-run-time
+      - INFERSCALE_BENCHMARK_INFERENCE_BASE_URL=http://release-render-required.invalid
+      - INFERSCALE_BENCHMARK_PROMETHEUS_URL=http://release-render-required.invalid
+      - INFERSCALE_BENCHMARK_DRIVER_VERSION=set-at-run-time
+      - INFERSCALE_BENCHMARK_CUDA_VERSION=set-at-run-time
+generatorOptions:
+  disableNameSuffixHash: true
+patches:
+  - path: api-replicas.yaml
+  - path: gateway-tls.yaml
+images:
+  # Deliberately non-routable sentinels. A remote release is rendered only by
+  # scripts/render-remote-release.sh, which replaces all four with caller-
+  # supplied immutable registry digests. Applying this overlay directly must
+  # never pull a mutable development control-plane image.
+  - name: ghcr.io/inferscale/api
+    newName: registry.invalid/inferscale/api
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  - name: ghcr.io/inferscale/controller
+    newName: registry.invalid/inferscale/controller
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  - name: ghcr.io/inferscale/admission
+    newName: registry.invalid/inferscale/admission
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  - name: ghcr.io/inferscale/migrate
+    newName: registry.invalid/inferscale/migrate
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000

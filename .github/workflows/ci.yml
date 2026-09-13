@@ -1,0 +1,152 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 1.26.5
+          cache: true
+      - run: gofmt -l . | tee /tmp/gofmt.txt && test ! -s /tmp/gofmt.txt
+      - run: make verify-generated
+      - run: go vet ./...
+      - run: go test -race -coverprofile=coverage.out ./...
+      - run: make e2e-local
+      - run: make conformance-static
+      - run: go build ./cmd/...
+
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e 'benchmarks/runner[dev]' -e 'modelcache[dev]'
+      - run: ruff check benchmarks modelcache runtime/trtllm
+      - run: ruff format --check benchmarks modelcache runtime/trtllm
+      - run: mypy benchmarks modelcache runtime/trtllm/metrics_exporter.py runtime/trtllm/test_metrics_exporter.py
+      - run: pytest benchmarks modelcache runtime/trtllm/test_metrics_exporter.py
+
+  manifests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-kubectl@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install 'PyYAML==6.0.2'
+      - run: make test-shell verify-manifests
+      - name: Prometheus semantic validation
+        run: |
+          docker run --rm --entrypoint=promtool -v "$PWD:/work:ro" \
+            -v "$PWD/observability/alerts/inferscale.rules.yaml:/etc/prometheus/alerts.yml:ro" \
+            prom/prometheus@sha256:69f5241418838263316593f7274a304b095c40bcf22e57272865da91bd60a8ac \
+            check rules /work/observability/alerts/inferscale.rules.yaml
+          docker run --rm --entrypoint=promtool -v "$PWD:/work:ro" \
+            -v "$PWD/observability/alerts/inferscale.rules.yaml:/etc/prometheus/alerts.yml:ro" \
+            prom/prometheus@sha256:69f5241418838263316593f7274a304b095c40bcf22e57272865da91bd60a8ac \
+            check config /work/observability/prometheus/prometheus.yml
+
+  migrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7
+        env:
+          POSTGRES_USER: inferscale
+          POSTGRES_PASSWORD: inferscale
+          POSTGRES_DB: inferscale_empty
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U inferscale -d inferscale_empty"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 1.26.5
+          cache: true
+      - name: Empty database and idempotent replay
+        env:
+          INFERSCALE_DATABASE_URL: postgres://inferscale:inferscale@localhost:5432/inferscale_empty?sslmode=disable
+        run: |
+          go run ./cmd/migrate up > /tmp/migrate-first.log 2>&1 &
+          first=$!
+          go run ./cmd/migrate up > /tmp/migrate-second.log 2>&1 &
+          second=$!
+          wait "$first"
+          wait "$second"
+          cat /tmp/migrate-first.log /tmp/migrate-second.log
+          go run ./cmd/migrate status
+          go run ./cmd/migrate up
+      - name: PostgreSQL transaction regressions
+        env:
+          INFERSCALE_TEST_DATABASE_URL: postgres://inferscale:inferscale@localhost:5432/inferscale_empty?sslmode=disable
+        run: go test -race ./internal/storage/postgres
+      - name: Upgrade from the v000001 schema fixture
+        env:
+          PGPASSWORD: inferscale
+          INFERSCALE_DATABASE_URL: postgres://inferscale:inferscale@localhost:5432/inferscale_upgrade?sslmode=disable
+        run: |
+          createdb -h localhost -U inferscale inferscale_upgrade
+          go run ./cmd/migrate status
+          psql -h localhost -U inferscale -d inferscale_upgrade -v ON_ERROR_STOP=1 -f internal/storage/postgres/migrations/000001_platform.up.sql
+          psql -h localhost -U inferscale -d inferscale_upgrade -v ON_ERROR_STOP=1 -c "INSERT INTO goose_db_version (version_id, is_applied) VALUES (1, true)"
+          go run ./cmd/migrate up
+          go run ./cmd/migrate status
+          psql -h localhost -U inferscale -d inferscale_upgrade -Atqc "SELECT to_regclass('public.sync_outbox'), to_regclass('public.usage_hourly')" | grep -Fq 'sync_outbox|usage_hourly'
+
+  local-stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      INFERSCALE_K3D_CLUSTER: inferscale-ci
+      INFERSCALE_K3S_IMAGE: rancher/k3s:v1.36.2-k3s1
+      INFERSCALE_DEV_SKIP_BENCHMARK_IMAGE: "true"
+      INFERSCALE_E2E_WAIT_SECONDS: "600"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 1.26.5
+          cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.36.2
+      - name: Install pinned k3d
+        run: |
+          curl -fsSL -o /tmp/k3d https://github.com/k3d-io/k3d/releases/download/v5.8.3/k3d-linux-amd64
+          echo 'dbaa79a76ace7f4ca230a1ff41dc7d8a5036a8ad0309e9c54f9bf3836dbe853e  /tmp/k3d' | sha256sum --check --status
+          sudo install -m 0755 /tmp/k3d /usr/local/bin/k3d
+      - name: Live local control-plane gate
+        run: make e2e-local-live
+      - name: Delete ephemeral k3d cluster
+        if: always()
+        run: |
+          if command -v k3d >/dev/null 2>&1; then
+            k3d cluster delete "${INFERSCALE_K3D_CLUSTER}" || true
+          fi

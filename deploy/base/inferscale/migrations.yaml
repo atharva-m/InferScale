@@ -1,0 +1,70 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: inferscale-migrate-000005
+  labels:
+    app.kubernetes.io/name: inferscale-migrate
+    app.kubernetes.io/component: database-migration
+spec:
+  backoffLimit: 12
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: inferscale-migrate
+        app.kubernetes.io/component: database-migration
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      # Keep one pod alive while DNS, storage, and its network policy become
+      # usable; immediately failing migration pods can repeatedly hit this race.
+      initContainers:
+        - name: wait-for-database
+          image: postgres@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7
+          imagePullPolicy: IfNotPresent
+          command: [/bin/sh, -ec]
+          args:
+            - |
+              echo "waiting for PostgreSQL to accept connections"
+              attempt=0
+              while [ "$attempt" -lt 60 ]; do
+                if pg_isready -d "$INFERSCALE_DATABASE_URL" -t 2 >/dev/null 2>&1; then
+                  exit 0
+                fi
+                attempt=$((attempt + 1))
+                if [ "$attempt" -lt 60 ]; then
+                  sleep 2
+                fi
+              done
+              echo "PostgreSQL did not become ready after 60 attempts" >&2
+              exit 1
+          env:
+            - name: INFERSCALE_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: inferscale-storage, key: database_url}}
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+            readOnlyRootFilesystem: true
+      containers:
+        - name: migrate
+          image: ghcr.io/inferscale/migrate:0.1.0-dev
+          imagePullPolicy: IfNotPresent
+          args: [up]
+          env:
+            - name: INFERSCALE_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: inferscale-storage, key: database_url}}
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits: {cpu: 250m, memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+            readOnlyRootFilesystem: true

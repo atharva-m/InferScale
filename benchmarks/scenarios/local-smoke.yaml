@@ -1,0 +1,38 @@
+schema_version: 1
+name: qwen-small-vllm-local-smoke
+measurement_tool: inferscale-native-http-v1
+publishable: false
+target:
+  base_url: http://127.0.0.1:8000
+  deployment: qwen-local
+  api_mode: openai
+  api_key_env: INFERSCALE_API_KEY
+  request_timeout_s: 180
+  verify_tls: true
+deployment:
+  model: Qwen/Qwen3-0.6B
+  model_revision: c1899de289a04d12100db370d81485cdf75e47ca
+  backend: vllm
+  backend_version: 0.23.0
+  precision: bf16
+  quantization: none
+  gpu_type: RTX_4070
+  gpu_count: 1
+  tensor_parallelism: 1
+  prefix_cache: true
+  max_model_len: 2048
+workload:
+  input_tokens: 128
+  output_tokens: 32
+  concurrency: 1
+  requests: 4
+  dataset: ../workloads/smoke.jsonl
+  seed: 7
+cache_state: process-warm
+routing:
+  policy: round-robin
+slo:
+  ttft_p95_ms: 5000
+  tpot_p95_ms: 500
+metadata:
+  provider: local-wsl-development-only

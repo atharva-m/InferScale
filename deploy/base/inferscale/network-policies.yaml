@@ -1,0 +1,52 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-control-plane
+spec:
+  podSelector:
+    matchExpressions:
+      - {key: app.kubernetes.io/name, operator: In, values: [inferscale-api, inferscale-controller, inferscale-admission, inferscale-migrate]}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: inferscale-gateway}}
+      ports:
+        - {protocol: TCP, port: 8080}
+        - {protocol: TCP, port: 8082}
+        - {protocol: TCP, port: 9001}
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: inferscale-monitoring}}
+      ports:
+        - {protocol: TCP, port: 9090}
+    - from:
+        - namespaceSelector: {matchLabels: {app.kubernetes.io/managed-by: inferscale-controller}}
+          podSelector: {matchLabels: {app.kubernetes.io/name: inferscale-benchmark}}
+      ports:
+        - {protocol: TCP, port: 8080}
+  egress:
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: inferscale-system}}
+      ports:
+        - {protocol: TCP, port: 5432}
+        - {protocol: TCP, port: 6379}
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: inferscale-monitoring}}
+      ports:
+        - {protocol: TCP, port: 9090}
+        - {protocol: TCP, port: 4317}
+        - {protocol: TCP, port: 4318}
+    - ports:
+        - {protocol: TCP, port: 443}

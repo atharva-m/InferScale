@@ -1,0 +1,14 @@
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-envoy-traces
+  namespace: inferscale-monitoring
+spec:
+  from:
+    - group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      namespace: inferscale-gateway
+  to:
+    - group: ""
+      kind: Service
+      name: otel-collector

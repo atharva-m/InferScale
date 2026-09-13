@@ -1,0 +1,7 @@
+host                 = "203.0.113.10"
+ssh_user             = "root"
+ssh_private_key_path = "/absolute/path/to/private-key"
+k3s_version          = "v1.36.2+k3s1"
+k3s_installer_sha256 = "replace-with-verified-lowercase-64-hex-digest"
+expected_gpu_count   = 1
+gpu_sku              = "RTX_5090"

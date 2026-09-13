@@ -1,0 +1,63 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: inferscale-envoy
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: inferscale-tracing
+    namespace: inferscale-gateway
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: inferscale
+  namespace: inferscale-gateway
+spec:
+  gatewayClassName: inferscale-envoy
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              inferscale.io/gateway-routes: allowed
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: inferscale-tracing
+  namespace: inferscale-gateway
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyDeployment:
+        container:
+          # Must match components.envoyGateway.dataPlaneImage and
+          # dataPlaneImageDigest in versions.lock.yaml. This prevents the
+          # controller from generating a tag-only Envoy workload.
+          image: docker.io/envoyproxy/envoy:distroless-v1.38.0@sha256:a7a56545102f7a682e0cafea2c9b8448af1b09ebb710eab688dfb931e3ec7ff6
+  telemetry:
+    tracing:
+      # The release conformance run verifies trace continuity before this
+      # candidate matrix can be marked verified. No request headers or bodies
+      # are copied into custom tags.
+      samplingRate: 100
+      provider:
+        type: OpenTelemetry
+        backendRefs:
+          - group: ""
+            kind: Service
+            name: otel-collector
+            namespace: inferscale-monitoring
+            port: 4317
+      customTags:
+        platform:
+          type: Literal
+          literal: {value: inferscale}

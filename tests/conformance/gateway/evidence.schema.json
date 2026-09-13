@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://inferscale.io/schemas/gateway-conformance-evidence-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "recordedAt", "versionsLockSHA256", "matrix", "features"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "recordedAt": {"type": "string", "format": "date-time"},
+    "versionsLockSHA256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "matrix": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "minLength": 1},
+      "required": [
+        "envoyGateway",
+        "gatewayAPI",
+        "gatewayAPIInferenceExtension",
+        "llmd",
+        "keda",
+        "vllm",
+        "tensorrtLLM"
+      ],
+      "minProperties": 7
+    },
+    "features": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "external-authorization",
+        "full-duplex-ext-proc",
+        "inference-pool-backends",
+        "backend-request-header-modifier",
+        "weighted-backends",
+        "fractional-request-mirror",
+        "url-rewrite",
+        "trace-continuity"
+      ],
+      "properties": {
+        "external-authorization": {"$ref": "#/$defs/feature"},
+        "full-duplex-ext-proc": {"$ref": "#/$defs/feature"},
+        "inference-pool-backends": {"$ref": "#/$defs/feature"},
+        "backend-request-header-modifier": {"$ref": "#/$defs/feature"},
+        "weighted-backends": {"$ref": "#/$defs/feature"},
+        "fractional-request-mirror": {"$ref": "#/$defs/feature"},
+        "url-rewrite": {"$ref": "#/$defs/feature"},
+        "trace-continuity": {"$ref": "#/$defs/feature"}
+      }
+    }
+  },
+  "$defs": {
+    "feature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "evidence"],
+      "properties": {
+        "passed": {"const": true},
+        "evidence": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

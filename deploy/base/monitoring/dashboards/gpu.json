@@ -1,0 +1,13 @@
+{
+  "annotations": {"list": []}, "editable": false,
+  "panels": [
+    {"id": 1, "title": "GPU utilization", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100}}, "targets": [{"expr": "DCGM_FI_DEV_GPU_UTIL", "legendFormat": "GPU {{gpu}}", "refId": "A"}]},
+    {"id": 2, "title": "VRAM used", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "decmbytes"}}, "targets": [{"expr": "DCGM_FI_DEV_FB_USED", "legendFormat": "GPU {{gpu}}", "refId": "A"}]},
+    {"id": 3, "title": "Power draw", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "watt"}}, "targets": [{"expr": "DCGM_FI_DEV_POWER_USAGE", "legendFormat": "GPU {{gpu}}", "refId": "A"}]},
+    {"id": 4, "title": "GPU temperature", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "celsius"}}, "targets": [{"expr": "DCGM_FI_DEV_GPU_TEMP", "legendFormat": "GPU {{gpu}}", "refId": "A"}]},
+    {"id": 5, "title": "PCIe throughput", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "Bps"}}, "targets": [{"expr": "DCGM_FI_PROF_PCIE_TX_BYTES", "legendFormat": "GPU {{gpu}} TX", "refId": "A"}, {"expr": "DCGM_FI_PROF_PCIE_RX_BYTES", "legendFormat": "GPU {{gpu}} RX", "refId": "B"}]},
+    {"id": 6, "title": "XID errors", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "increase(DCGM_FI_DEV_XID_ERRORS[5m])", "legendFormat": "GPU {{gpu}}", "refId": "A"}]}
+  ],
+  "refresh": "15s", "schemaVersion": 41, "tags": ["inferscale", "gpu"], "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"}, "timezone": "browser", "title": "InferScale GPU", "uid": "inferscale-gpu", "version": 1
+}

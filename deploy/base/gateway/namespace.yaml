@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: inferscale-gateway
+  labels:
+    app.kubernetes.io/part-of: inferscale
+    inferscale.io/access-role: gateway
+    inferscale.io/gateway-routes: allowed
+    pod-security.kubernetes.io/enforce: restricted

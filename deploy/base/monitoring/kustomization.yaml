@@ -1,0 +1,34 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: inferscale-monitoring
+resources:
+  - namespace.yaml
+  - prometheus-rbac.yaml
+  - workloads.yaml
+  - services.yaml
+  - reference-grant.yaml
+configMapGenerator:
+  - name: prometheus-config
+    files:
+      - prometheus.yml
+      - alerts.yml
+  - name: otel-config
+    files:
+      - otel-collector.yaml
+  - name: tempo-config
+    files:
+      - tempo.yaml
+  - name: grafana-provisioning
+    files:
+      - datasources.yaml
+      - dashboard-provider.yaml
+  - name: grafana-dashboards
+    files:
+      - dashboards/overview.json
+      - dashboards/runtime.json
+      - dashboards/router.json
+      - dashboards/gpu.json
+      - dashboards/deployment.json
+      - dashboards/rollout.json
+generatorOptions:
+  disableNameSuffixHash: true

@@ -1,0 +1,105 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    platform: inferscale
+rule_files:
+  - /etc/prometheus/alerts.yml
+scrape_configs:
+  - job_name: prometheus
+    static_configs: [{targets: [localhost:9090]}]
+  - job_name: annotated-pods
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+        action: drop
+        regex: inferscale-controller
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: "true"
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scheme]
+        action: replace
+        target_label: __scheme__
+        regex: (https?)
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        target_label: __address__
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+        target_label: service
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+        target_label: component
+      - source_labels: [__meta_kubernetes_pod_label_inferscale_io_tenant]
+        target_label: tenant
+      - source_labels: [__meta_kubernetes_pod_label_inferscale_io_deployment]
+        target_label: deployment
+      - source_labels: [__meta_kubernetes_pod_label_inferscale_io_revision]
+        target_label: revision
+      - source_labels: [__meta_kubernetes_pod_label_inferscale_io_backend]
+        target_label: backend
+  # This exporter describes resources in other namespaces. Keep its workload
+  # labels, and name discovery labels scrape_* to avoid changing attribution.
+  - job_name: inferscale-controller
+    honor_labels: true
+    kubernetes_sd_configs: [{role: pod}]
+    relabel_configs:
+      - {source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name], action: keep, regex: inferscale-controller}
+      - {source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape], action: keep, regex: "true"}
+      - {source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port], action: replace, target_label: __address__, regex: '([^:]+)(?::\d+)?;(\d+)', replacement: '$1:$2'}
+      - {source_labels: [__meta_kubernetes_namespace], target_label: scrape_namespace}
+      - {source_labels: [__meta_kubernetes_pod_name], target_label: scrape_pod}
+  - job_name: otel-collector
+    static_configs: [{targets: [otel-collector:9464]}]
+  - job_name: annotated-services
+    kubernetes_sd_configs: [{role: endpoints}]
+    relabel_configs:
+      - {source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape], action: keep, regex: "true"}
+      - {source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scheme], action: replace, target_label: __scheme__, regex: '(https?)'}
+      - {source_labels: [__meta_kubernetes_service_annotation_prometheus_io_path], action: replace, target_label: __metrics_path__, regex: '(.+)'}
+      - {source_labels: [__address__, __meta_kubernetes_service_annotation_prometheus_io_port], action: replace, target_label: __address__, regex: '([^:]+)(?::\d+)?;(\d+)', replacement: '$1:$2'}
+      # Use scrape_* names so DCGM's workload namespace/pod labels remain
+      # intact and rollout safety queries can identify the affected worker.
+      - {source_labels: [__meta_kubernetes_namespace], target_label: scrape_namespace}
+      - {source_labels: [__meta_kubernetes_service_name], target_label: scrape_service}
+      - {source_labels: [__meta_kubernetes_pod_name], target_label: scrape_pod}
+  - job_name: inferscale-managed-services
+    kubernetes_sd_configs:
+      - role: endpoints
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_service_label_app_kubernetes_io_managed_by]
+        action: keep
+        regex: inferscale-controller
+      - source_labels: [__meta_kubernetes_endpoint_port_name]
+        action: keep
+        regex: http|metrics
+      # TensorRT-LLM 1.0 serves JSON, not Prometheus exposition, on its HTTP
+      # port. Scrape the colocated translation sidecar only.
+      - source_labels: [__meta_kubernetes_service_label_inferscale_io_backend, __meta_kubernetes_endpoint_port_name]
+        action: drop
+        regex: tensorrt-llm;http
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_service_name]
+        target_label: service
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_service_label_app_kubernetes_io_component]
+        target_label: component
+      - source_labels: [__meta_kubernetes_service_label_inferscale_io_tenant]
+        target_label: tenant
+      - source_labels: [__meta_kubernetes_service_label_inferscale_io_deployment]
+        target_label: deployment
+      - source_labels: [__meta_kubernetes_service_label_inferscale_io_revision]
+        target_label: revision
+      - source_labels: [__meta_kubernetes_service_label_inferscale_io_backend]
+        target_label: backend

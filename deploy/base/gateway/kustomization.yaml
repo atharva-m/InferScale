@@ -1,0 +1,8 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - controller-rbac.yaml
+  - gateway.yaml
+  - routes.yaml
+  - security-policy.yaml

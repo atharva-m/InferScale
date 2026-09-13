@@ -1,0 +1,21 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "panels": [
+    {"id": 1, "title": "Ready deployments", "type": "stat", "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum(inferscale_deployment_ready)", "refId": "A"}]},
+    {"id": 2, "title": "Requests / second", "type": "stat", "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum(rate(inferscale_requests_total{outcome=\"total\"}[5m]))", "refId": "A"}]},
+    {"id": 3, "title": "Tenant throttles / second", "type": "stat", "gridPos": {"h": 6, "w": 6, "x": 12, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum(rate(inferscale_tenant_throttles_total[5m]))", "refId": "A"}]},
+    {"id": 4, "title": "GPU-hours / hour", "type": "stat", "gridPos": {"h": 6, "w": 6, "x": 18, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum(rate(inferscale_gpu_seconds_total[1h]))", "legendFormat": "GPU seconds/s", "refId": "A"}]},
+    {"id": 5, "title": "Request outcomes", "type": "timeseries", "gridPos": {"h": 9, "w": 12, "x": 0, "y": 6}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum by (outcome) (rate(inferscale_requests_total[5m]))", "legendFormat": "{{outcome}}", "refId": "A"}]},
+    {"id": 6, "title": "Desired and ready replicas", "type": "timeseries", "gridPos": {"h": 9, "w": 12, "x": 12, "y": 6}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum by (deployment) (inferscale_deployment_replicas{state=\"desired\"})", "legendFormat": "{{deployment}} desired", "refId": "A"}, {"expr": "sum by (deployment) (inferscale_deployment_replicas{state=\"ready\"})", "legendFormat": "{{deployment}} ready", "refId": "B"}]}
+  ],
+  "refresh": "15s",
+  "schemaVersion": 41,
+  "tags": ["inferscale", "overview"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "timezone": "browser",
+  "title": "InferScale Overview",
+  "uid": "inferscale-overview",
+  "version": 1
+}

@@ -1,0 +1,525 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.0
+  name: inferencedeployments.platform.inferscale.io
+spec:
+  group: platform.inferscale.io
+  names:
+    kind: InferenceDeployment
+    listKind: InferenceDeploymentList
+    plural: inferencedeployments
+    shortNames:
+    - infdeploy
+    singular: inferencedeployment
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.runtime.backend
+      name: Backend
+      type: string
+    - jsonPath: .status.replicas.ready
+      name: Ready
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              accelerator:
+                properties:
+                  count:
+                    enum:
+                    - 1
+                    - 2
+                    - 4
+                    format: int32
+                    type: integer
+                  type:
+                    minLength: 1
+                    type: string
+                  vendor:
+                    enum:
+                    - nvidia
+                    type: string
+                required:
+                - count
+                - type
+                - vendor
+                type: object
+              admission:
+                properties:
+                  maxConcurrentRequests:
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  maxQueuedRequests:
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  priorityClass:
+                    default: standard
+                    enum:
+                    - interactive
+                    - standard
+                    - batch
+                    type: string
+                required:
+                - maxConcurrentRequests
+                - maxQueuedRequests
+                - priorityClass
+                type: object
+              model:
+                properties:
+                  revision:
+                    description: |-
+                      Lowercase is canonical so revision digests and node-cache keys cannot
+                      diverge solely because clients used different hexadecimal casing.
+                    pattern: ^[0-9a-f]{40}$
+                    type: string
+                  uri:
+                    pattern: ^hf://[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$
+                    type: string
+                required:
+                - revision
+                - uri
+                type: object
+              observability:
+                properties:
+                  tracing:
+                    default: true
+                    type: boolean
+                required:
+                - tracing
+                type: object
+              rollout:
+                properties:
+                  shadowPercent:
+                    default: 10
+                    format: int32
+                    maximum: 100
+                    minimum: 0
+                    type: integer
+                  strategy:
+                    default: progressive
+                    enum:
+                    - progressive
+                    type: string
+                required:
+                - shadowPercent
+                - strategy
+                type: object
+              routing:
+                properties:
+                  policy:
+                    default: load-aware
+                    enum:
+                    - round-robin
+                    - load-aware
+                    - prefix-aware
+                    type: string
+                required:
+                - policy
+                type: object
+              runtime:
+                properties:
+                  backend:
+                    default: auto
+                    enum:
+                    - auto
+                    - vllm
+                    - tensorrt-llm
+                    type: string
+                  maxModelLen:
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  precision:
+                    default: bf16
+                    enum:
+                    - bf16
+                    - fp8
+                    type: string
+                  prefixCaching:
+                    properties:
+                      enabled:
+                        type: boolean
+                    required:
+                    - enabled
+                    type: object
+                  quantization:
+                    default: none
+                    enum:
+                    - none
+                    - awq
+                    type: string
+                  tensorParallelism:
+                    enum:
+                    - 1
+                    - 2
+                    - 4
+                    format: int32
+                    type: integer
+                required:
+                - backend
+                - maxModelLen
+                - precision
+                - prefixCaching
+                - tensorParallelism
+                type: object
+              scaling:
+                properties:
+                  maxReplicas:
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  minReplicas:
+                    default: 1
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  policy:
+                    default: saturation
+                    enum:
+                    - saturation
+                    type: string
+                required:
+                - maxReplicas
+                - minReplicas
+                - policy
+                type: object
+              slo:
+                properties:
+                  tpot:
+                    properties:
+                      percentile:
+                        format: int32
+                        maximum: 100
+                        minimum: 1
+                        type: integer
+                      targetMs:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                    required:
+                    - percentile
+                    - targetMs
+                    type: object
+                  ttft:
+                    properties:
+                      percentile:
+                        format: int32
+                        maximum: 100
+                        minimum: 1
+                        type: integer
+                      targetMs:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                    required:
+                    - percentile
+                    - targetMs
+                    type: object
+                required:
+                - tpot
+                - ttft
+                type: object
+            required:
+            - accelerator
+            - admission
+            - model
+            - observability
+            - rollout
+            - routing
+            - runtime
+            - scaling
+            type: object
+            x-kubernetes-validations:
+            - message: accelerator count must equal tensor parallelism in v1
+              rule: self.accelerator.count == self.runtime.tensorParallelism
+            - message: minReplicas must not exceed maxReplicas
+              rule: self.scaling.minReplicas <= self.scaling.maxReplicas
+            - message: fp8 precision cannot be combined with awq quantization
+              rule: '!(self.runtime.precision == ''fp8'' && self.runtime.quantization
+                == ''awq'')'
+            - message: prefix-aware routing requires prefix caching
+              rule: self.routing.policy != 'prefix-aware' || self.runtime.prefixCaching.enabled
+            - message: TensorRT-LLM does not support prefix-aware routing in v1
+              rule: self.runtime.backend != 'tensorrt-llm' || self.routing.policy
+                != 'prefix-aware'
+            - message: TensorRT-LLM supports only quantization=none in v1
+              rule: self.runtime.backend != 'tensorrt-llm' || self.runtime.quantization
+                == 'none'
+            - message: TensorRT-LLM supports only bf16 precision in v1
+              rule: self.runtime.backend != 'tensorrt-llm' || self.runtime.precision
+                == 'bf16'
+          status:
+            properties:
+              cache:
+                properties:
+                  weights:
+                    type: string
+                  workersWarm:
+                    format: int32
+                    type: integer
+                type: object
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              endpoint:
+                properties:
+                  url:
+                    type: string
+                type: object
+              observedGeneration:
+                format: int64
+                type: integer
+              phase:
+                type: string
+              replicas:
+                properties:
+                  desired:
+                    format: int32
+                    type: integer
+                  ready:
+                    format: int32
+                    type: integer
+                type: object
+              revision:
+                properties:
+                  candidate:
+                    type: string
+                  candidateId:
+                    type: string
+                  lastFailed:
+                    description: |-
+                      LastFailed and LastFailedID retain the desired revision tombstone after
+                      its 24-hour Kubernetes inspection window expires. They are historical
+                      identity, not an active routing candidate.
+                    type: string
+                  lastFailedId:
+                    type: string
+                  stable:
+                    type: string
+                  stableId:
+                    type: string
+                type: object
+              rollout:
+                properties:
+                  candidateWeight:
+                    format: int32
+                    type: integer
+                  lastRegressionWindow:
+                    format: date-time
+                    type: string
+                  lastRollback:
+                    description: |-
+                      RollbackEvidenceStatus is a bounded, label-free snapshot of the signals
+                      that caused the most recent rollback. Raw PromQL, pod names, request IDs,
+                      and arbitrary metric labels are deliberately excluded from CR status.
+                    properties:
+                      available:
+                        type: boolean
+                      candidateErrorRatePpm:
+                        format: int64
+                        type: integer
+                      candidateOoms:
+                        format: int64
+                        type: integer
+                      candidateQueueP95Ms:
+                        format: int64
+                        type: integer
+                      candidateRequests:
+                        format: int64
+                        type: integer
+                      candidateRestarts:
+                        format: int64
+                        type: integer
+                      candidateSloViolation:
+                        type: boolean
+                      candidateTpotP95Ms:
+                        format: int64
+                        type: integer
+                      candidateTtftP95Ms:
+                        format: int64
+                        type: integer
+                      candidateXidErrors:
+                        format: int64
+                        type: integer
+                      maxCandidateErrorRatePpm:
+                        format: int64
+                        type: integer
+                      maxErrorRateIncreasePpm:
+                        format: int64
+                        type: integer
+                      maxQueueRatioPpm:
+                        format: int64
+                        type: integer
+                      maxRestarts:
+                        format: int64
+                        type: integer
+                      maxTpotRatioPpm:
+                        format: int64
+                        type: integer
+                      maxTtftRatioPpm:
+                        format: int64
+                        type: integer
+                      observedAt:
+                        format: date-time
+                        type: string
+                      reason:
+                        maxLength: 256
+                        type: string
+                      source:
+                        enum:
+                        - endpoint-picker
+                        - shadow-runtime
+                        - unavailable
+                        type: string
+                      stableErrorRatePpm:
+                        format: int64
+                        type: integer
+                      stableQueueP95Ms:
+                        format: int64
+                        type: integer
+                      stableTpotP95Ms:
+                        format: int64
+                        type: integer
+                      stableTtftP95Ms:
+                        format: int64
+                        type: integer
+                      stage:
+                        maxLength: 32
+                        type: string
+                      unavailableReason:
+                        maxLength: 256
+                        type: string
+                      windowStartedAt:
+                        format: date-time
+                        type: string
+                    required:
+                    - available
+                    - maxCandidateErrorRatePpm
+                    - maxErrorRateIncreasePpm
+                    - maxQueueRatioPpm
+                    - maxRestarts
+                    - maxTpotRatioPpm
+                    - maxTtftRatioPpm
+                    - observedAt
+                    - reason
+                    - source
+                    - stage
+                    - windowStartedAt
+                    type: object
+                  regressionWindows:
+                    format: int32
+                    type: integer
+                  stage:
+                    type: string
+                  stageStartedAt:
+                    format: date-time
+                    type: string
+                type: object
+              runtime:
+                properties:
+                  backend:
+                    enum:
+                    - auto
+                    - vllm
+                    - tensorrt-llm
+                    type: string
+                  modelRevision:
+                    type: string
+                  tensorParallelism:
+                    format: int32
+                    type: integer
+                  version:
+                    type: string
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

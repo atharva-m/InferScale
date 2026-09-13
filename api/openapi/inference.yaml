@@ -1,0 +1,16 @@
+openapi: 3.1.0
+info:
+  title: InferScale Inference API
+  version: 1.0.0-alpha.1
+  description: OpenAI-compatible text-only inference subset served through Envoy Gateway.
+servers:
+  - url: https://api.inferscale.local
+security:
+  - bearerAPIKey: []
+paths:
+  /v1/deployments/{deployment_id}/chat/completions:
+    $ref: ./openapi.yaml#/paths/~1v1~1deployments~1{deployment_id}~1chat~1completions
+components:
+  securitySchemes:
+    bearerAPIKey:
+      $ref: ./openapi.yaml#/components/securitySchemes/bearerAPIKey

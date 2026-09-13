@@ -1,0 +1,174 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inferscale-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: inferscale-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: inferscale-api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      serviceAccountName: inferscale-api
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: api
+          image: ghcr.io/inferscale/api:0.1.0-dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: http, containerPort: 8080}
+            - {name: metrics, containerPort: 9090}
+          envFrom:
+            - configMapRef: {name: inferscale-config}
+          env:
+            - name: INFERSCALE_HTTP_ADDR
+              value: :8080
+            - name: INFERSCALE_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: inferscale-storage, key: database_url}}
+            - name: INFERSCALE_VALKEY_ADDR
+              valueFrom: {secretKeyRef: {name: inferscale-storage, key: valkey_addr}}
+            - name: INFERSCALE_BENCHMARK_CALLBACK_SIGNING_KEY
+              valueFrom: {secretKeyRef: {name: inferscale-storage, key: benchmark_callback_signing_key}}
+            - name: INFERSCALE_BENCHMARK_IMAGE
+              valueFrom: {secretKeyRef: {name: inferscale-storage, key: benchmark_runner_image}}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          readinessProbe: {httpGet: {path: /readyz, port: http}, initialDelaySeconds: 2, periodSeconds: 5}
+          livenessProbe: {httpGet: {path: /healthz, port: http}, initialDelaySeconds: 5, periodSeconds: 10}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: tmp, emptyDir: {}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inferscale-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: inferscale-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: inferscale-controller
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      serviceAccountName: inferscale-controller
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: controller
+          image: ghcr.io/inferscale/controller:0.1.0-dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: health, containerPort: 8081}
+            - {name: metrics, containerPort: 9090}
+          envFrom:
+            - configMapRef: {name: inferscale-config}
+          env:
+            - name: INFERSCALE_HTTP_ADDR
+              value: :8081
+            - name: INFERSCALE_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: inferscale-storage, key: database_url}}
+            - name: INFERSCALE_VALKEY_ADDR
+              valueFrom: {secretKeyRef: {name: inferscale-storage, key: valkey_addr}}
+            - name: INFERSCALE_VLLM_IMAGE
+              valueFrom: {secretKeyRef: {name: inferscale-storage, key: runtime_vllm_image}}
+            - name: INFERSCALE_TRTLLM_IMAGE
+              valueFrom: {secretKeyRef: {name: inferscale-storage, key: runtime_trtllm_image}}
+            - name: INFERSCALE_PREFETCH_IMAGE
+              valueFrom: {secretKeyRef: {name: inferscale-storage, key: modelcache_image}}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          readinessProbe: {httpGet: {path: /readyz, port: health}, initialDelaySeconds: 2, periodSeconds: 5}
+          livenessProbe: {httpGet: {path: /healthz, port: health}, initialDelaySeconds: 5, periodSeconds: 10}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: tmp, emptyDir: {}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inferscale-admission
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: inferscale-admission
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: inferscale-admission
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      serviceAccountName: inferscale-admission
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: admission
+          image: ghcr.io/inferscale/admission:0.1.0-dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: http, containerPort: 8082}
+            - {name: grpc, containerPort: 9001}
+            - {name: metrics, containerPort: 9090}
+          envFrom:
+            - configMapRef: {name: inferscale-config}
+          env:
+            - name: INFERSCALE_HTTP_ADDR
+              value: :8082
+            - name: INFERSCALE_GRPC_ADDR
+              value: :9001
+            - name: INFERSCALE_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: inferscale-storage, key: database_url}}
+            - name: INFERSCALE_VALKEY_ADDR
+              valueFrom: {secretKeyRef: {name: inferscale-storage, key: valkey_addr}}
+            - name: INFERSCALE_BENCHMARK_CALLBACK_SIGNING_KEY
+              valueFrom: {secretKeyRef: {name: inferscale-storage, key: benchmark_callback_signing_key}}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          readinessProbe: {httpGet: {path: /readyz, port: http}, initialDelaySeconds: 2, periodSeconds: 5}
+          livenessProbe: {httpGet: {path: /healthz, port: http}, initialDelaySeconds: 5, periodSeconds: 10}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: tmp, emptyDir: {}}

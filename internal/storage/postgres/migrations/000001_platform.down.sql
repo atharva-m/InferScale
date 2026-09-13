@@ -1,0 +1,12 @@
+DROP TABLE IF EXISTS sync_outbox;
+DROP TABLE IF EXISTS usage_hourly;
+DROP TABLE IF EXISTS rollout_history;
+DROP TABLE IF EXISTS benchmark_results;
+DROP TABLE IF EXISTS benchmark_runs;
+DROP TABLE IF EXISTS runtime_profiles;
+DROP TABLE IF EXISTS operations;
+DROP TABLE IF EXISTS deployment_revisions;
+DROP TABLE IF EXISTS deployments;
+DROP TABLE IF EXISTS api_keys;
+DROP TABLE IF EXISTS tenants;
+DROP TABLE IF EXISTS schema_migrations;

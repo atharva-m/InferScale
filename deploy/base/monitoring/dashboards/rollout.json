@@ -1,0 +1,18 @@
+{
+  "uid": "inferscale-rollout",
+  "title": "InferScale / Rollout",
+  "schemaVersion": 41,
+  "version": 1,
+  "refresh": "15s",
+  "tags": ["inferscale", "rollout"],
+  "panels": [
+    {"id": 1, "title": "Current rollout stage", "type": "state-timeline", "gridPos": {"h": 6, "w": 12, "x": 0, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "inferscale_rollout_stage{deployment=~\"$deployment\"}", "legendFormat": "{{candidate_revision}} {{stage}}", "refId": "A"}]},
+    {"id": 2, "title": "Candidate traffic weight", "type": "timeseries", "gridPos": {"h": 6, "w": 12, "x": 12, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100}}, "targets": [{"expr": "inferscale_rollout_traffic_weight{deployment=~\"$deployment\",role=\"candidate\"}", "legendFormat": "{{candidate_revision}}", "refId": "A"}]},
+    {"id": 3, "title": "Stable / candidate error rate", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "percentunit"}}, "targets": [{"expr": "sum by (revision) (rate(inferscale_requests_total{deployment=~\"$deployment\",outcome=\"error\"}[5m])) / clamp_min(sum by (revision) (rate(inferscale_requests_total{deployment=~\"$deployment\",outcome=\"total\"}[5m])), 0.001)", "legendFormat": "{{revision}}", "refId": "A"}]},
+    {"id": 4, "title": "Stable / candidate P95 TTFT", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "s"}}, "targets": [{"expr": "histogram_quantile(0.95, sum by (le, revision) (rate(inferscale_ttft_seconds_bucket{deployment=~\"$deployment\"}[5m])))", "legendFormat": "{{revision}}", "refId": "A"}]},
+    {"id": 5, "title": "Candidate samples in gate window", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum by (revision) (increase(inferscale_requests_total{deployment=~\"$deployment\",revision=~\".+\",outcome=\"total\"}[10m]))", "legendFormat": "{{revision}}", "refId": "A"}]},
+    {"id": 6, "title": "Rollout transitions", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum by (stage, outcome) (increase(inferscale_rollout_transitions_total{deployment=~\"$deployment\"}[1h]))", "legendFormat": "{{stage}} {{outcome}}", "refId": "A"}]}
+  ],
+  "templating": {"list": [{"name": "deployment", "label": "Deployment", "type": "query", "datasource": {"type": "prometheus", "uid": "prometheus"}, "query": {"query": "label_values(inferscale_rollout_stage, deployment)", "refId": "var"}, "includeAll": false, "multi": false}]},
+  "time": {"from": "now-6h", "to": "now"}
+}

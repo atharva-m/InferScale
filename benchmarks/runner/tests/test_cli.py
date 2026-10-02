@@ -89,7 +89,7 @@ def test_scheduled_run_uses_run_token_for_inference_and_callback(
     monkeypatch.setattr(
         cli,
         "validate_publishable_telemetry",
-        lambda *_args: {
+        lambda *_args, **_kwargs: {
             "valid": True,
             "observed_gpus": [
                 {

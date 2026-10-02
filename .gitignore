@@ -19,21 +19,42 @@ __pycache__/
 *.pem
 *.key
 kubeconfig*
+.aws/
+.ssh/
+.kube/
 
 # Generated benchmark data
 benchmarks/results/*
 !benchmarks/results/.gitignore
 benchmarks/artifacts/
 tests/conformance/gateway/evidence.json
+/tmp/
+
+# Local agent and project instructions
+.agents/
+.codex/
+/AGENTS.md
+/INFERSCALE_CODEX_SPEC.md
 
 # Infrastructure state
 **/.terraform/
 *.tfstate
 *.tfstate.*
 .terraform.lock.hcl
+*.tfplan
+*.tfvars
+*.tfvars.json
+!terraform.tfvars.example
 
 # Editors / operating systems
 .idea/
 .vscode/
 .DS_Store
 Thumbs.db
+*.log
+*.swp
+*.swo
+*~
+*.bak
+*.egg-info/
+/coverage.out

@@ -2,8 +2,11 @@ package valkey
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -11,6 +14,9 @@ import (
 )
 
 type Config struct {
+	// URL takes precedence over the legacy address fields. rediss enables
+	// certificate-verified TLS for externally managed Valkey services.
+	URL      string
 	Address  string
 	Username string
 	Password string
@@ -27,14 +33,39 @@ func Open(ctx context.Context, config Config) (*Client, error) {
 	if config.Prefix == "" {
 		config.Prefix = "inferscale"
 	}
-	client := redis.NewClient(&redis.Options{
-		Addr: config.Address, Username: config.Username, Password: config.Password, DB: config.Database,
-	})
+	options, err := connectionOptions(config)
+	if err != nil {
+		return nil, err
+	}
+	client := redis.NewClient(options)
 	if err := client.Ping(ctx).Err(); err != nil {
 		_ = client.Close()
 		return nil, fmt.Errorf("ping Valkey: %w", err)
 	}
 	return &Client{redis: client, prefix: config.Prefix}, nil
+}
+
+func connectionOptions(config Config) (*redis.Options, error) {
+	if config.URL == "" {
+		return &redis.Options{
+			Addr: config.Address, Username: config.Username, Password: config.Password, DB: config.Database,
+		}, nil
+	}
+	parsed, err := url.Parse(config.URL)
+	if err != nil || parsed.Hostname() == "" ||
+		(parsed.Scheme != "redis" && parsed.Scheme != "rediss") ||
+		strings.ContainsAny(config.URL, "?#\r\n\t ") {
+		// Parse errors can contain the URL, including its password.
+		return nil, errors.New("invalid Valkey URL: use redis:// or rediss:// with a host and optional database, without query or fragment")
+	}
+	options, err := redis.ParseURL(config.URL)
+	if err != nil {
+		return nil, errors.New("invalid Valkey URL connection settings")
+	}
+	if parsed.Scheme == "rediss" {
+		options.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: parsed.Hostname()}
+	}
+	return options, nil
 }
 
 func New(client *redis.Client, prefix string) *Client {
@@ -93,7 +124,7 @@ return {allowed, math.floor(tokens), retry_after_ms}
 var rateScript = redis.NewScript(rateScriptSource)
 
 func (c *Client) AllowRate(ctx context.Context, tenantID string, limit int64, window time.Duration) (RateDecision, error) {
-	if tenantID == "" || limit < 1 || window <= 0 {
+	if tenantID == "" || limit < 1 || window < time.Millisecond {
 		return RateDecision{}, errors.New("invalid rate limit")
 	}
 	result, err := rateScript.Run(ctx, c.redis, []string{c.key("rate", tenantID)}, limit, window.Milliseconds()).Slice()
@@ -131,7 +162,7 @@ return 1
 `)
 
 func (c *Client) AcquireConcurrency(ctx context.Context, tenantID string, limit int64, ttl time.Duration) (*Lease, bool, error) {
-	if tenantID == "" || limit < 1 || ttl <= 0 {
+	if tenantID == "" || limit < 1 || ttl < time.Millisecond {
 		return nil, false, errors.New("invalid concurrency limit")
 	}
 	token, err := uuid.NewV7()
@@ -157,7 +188,7 @@ func (c *Client) ReleaseConcurrency(ctx context.Context, lease *Lease) error {
 }
 
 func (c *Client) PutIdempotency(ctx context.Context, tenantID, key string, value []byte, ttl time.Duration) (bool, error) {
-	if tenantID == "" || key == "" || ttl <= 0 {
+	if tenantID == "" || key == "" || ttl < time.Millisecond {
 		return false, errors.New("invalid idempotency key")
 	}
 	return c.redis.SetNX(ctx, c.key("idempotency", tenantID, key), value, ttl).Result()
@@ -177,7 +208,7 @@ return 0
 `)
 
 func (c *Client) AcquireLock(ctx context.Context, namespace, name string, ttl time.Duration) (*Lease, bool, error) {
-	if namespace == "" || name == "" || ttl <= 0 {
+	if namespace == "" || name == "" || ttl < time.Millisecond {
 		return nil, false, errors.New("invalid lock")
 	}
 	token, err := uuid.NewV7()

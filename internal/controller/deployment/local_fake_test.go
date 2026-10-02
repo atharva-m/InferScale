@@ -53,6 +53,7 @@ func TestLocalFakeReconcileSkipsPrefetchAndRendersCPUWorker(t *testing.T) {
 			},
 			GatewayName: "inferscale", GatewayNamespace: "inferscale-gateway",
 			MonitoringNamespace: "inferscale-monitoring", PrometheusURL: "http://prometheus:9090",
+			OTLPEndpoint: "http://otel:4317",
 		},
 		Now: func() time.Time { return time.Unix(1_700_000_000, 0) },
 	}

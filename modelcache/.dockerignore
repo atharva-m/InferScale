@@ -1,0 +1,6 @@
+**
+!Dockerfile
+!.dockerignore
+!requirements.txt
+!__init__.py
+!entrypoint.py

@@ -32,12 +32,14 @@ func TestNamespaceProvisionerAppliesCompleteTypedBaseline(t *testing.T) {
 	mapper.Add(corev1.SchemeGroupVersion.WithKind("Namespace"), meta.RESTScopeRoot)
 	mapper.Add(corev1.SchemeGroupVersion.WithKind("ServiceAccount"), meta.RESTScopeNamespace)
 	mapper.Add(corev1.SchemeGroupVersion.WithKind("ResourceQuota"), meta.RESTScopeNamespace)
+	mapper.Add(corev1.SchemeGroupVersion.WithKind("LimitRange"), meta.RESTScopeNamespace)
 	mapper.Add(networkingv1.SchemeGroupVersion.WithKind("NetworkPolicy"), meta.RESTScopeNamespace)
 
 	expected := map[string]metav1.TypeMeta{
-		"/api/v1/namespaces/tenant-acme":                                    {APIVersion: "v1", Kind: "Namespace"},
-		"/api/v1/namespaces/tenant-acme/serviceaccounts/inferscale-runtime": {APIVersion: "v1", Kind: "ServiceAccount"},
-		"/api/v1/namespaces/tenant-acme/resourcequotas/inferscale-tenant":   {APIVersion: "v1", Kind: "ResourceQuota"},
+		"/api/v1/namespaces/tenant-acme":                                         {APIVersion: "v1", Kind: "Namespace"},
+		"/api/v1/namespaces/tenant-acme/serviceaccounts/inferscale-runtime":      {APIVersion: "v1", Kind: "ServiceAccount"},
+		"/api/v1/namespaces/tenant-acme/resourcequotas/inferscale-tenant":        {APIVersion: "v1", Kind: "ResourceQuota"},
+		"/api/v1/namespaces/tenant-acme/limitranges/inferscale-container-bounds": {APIVersion: "v1", Kind: "LimitRange"},
 	}
 	for _, name := range []string{
 		"default-deny", "allow-dns-egress", "allow-gateway-ingress", "allow-monitoring-ingress",

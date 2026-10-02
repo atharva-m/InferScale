@@ -80,11 +80,11 @@ def build_config(
             {
                 "kind": "synthetic_text",
                 "prompt_tokens": workload.input_tokens,
-                "prompt_tokens_stdev": 0,
+                # GuideLLM 0.7 accepts only positive stdev values or None.
+                # Equal bounds make the sampler deterministic without stdev.
                 "prompt_tokens_min": workload.input_tokens,
                 "prompt_tokens_max": workload.input_tokens,
                 "output_tokens": workload.output_tokens,
-                "output_tokens_stdev": 0,
                 "output_tokens_min": workload.output_tokens,
                 "output_tokens_max": workload.output_tokens,
             }

@@ -45,9 +45,9 @@ groups:
       - record: inferscale_runtime_waiting_requests
         expr: 'vllm:num_requests_waiting or inferscale_trtllm_queued_requests'
       - record: inferscale_runtime_kv_cache_utilization_ratio
-        expr: 'vllm:gpu_cache_usage_perc or inferscale_trtllm_kv_cache_utilization_ratio'
+        expr: '(vllm:kv_cache_usage_perc or vllm:gpu_cache_usage_perc) or inferscale_trtllm_kv_cache_utilization_ratio'
       - record: inferscale_runtime_prefix_cache_hit_ratio
-        expr: 'rate(vllm:prefix_cache_hits_total[5m]) / clamp_min(rate(vllm:prefix_cache_queries_total[5m]), 0.000001)'
+        expr: '((rate(vllm:prefix_cache_hits_total[5m]) or rate(vllm:prefix_cache_hits[5m])) / clamp_min((rate(vllm:prefix_cache_queries_total[5m]) or rate(vllm:prefix_cache_queries[5m])), 0.000001)) or inferscale_trtllm_prefix_cache_hit_ratio'
       - record: inferscale_router_flow_control_wait_seconds_bucket
         expr: 'llm_d_epp_flow_control_request_queue_duration_seconds_bucket'
       - record: inferscale_request_rejections_total

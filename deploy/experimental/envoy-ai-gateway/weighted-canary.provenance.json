@@ -1,0 +1,137 @@
+{
+  "scope": "Local qualification candidate; production versions.lock.yaml remains pending until exact-image live conformance passes",
+  "created_utc": "2026-09-16",
+  "sources": {
+    "ai-gateway": {
+      "version": "v0.7.0",
+      "upstream_tree_sha256": "d76e7140049f67b05ecc49bfebb92b61df2cd94aa236ce1af66e99eafc6556be",
+      "patched_tree_sha256": "deb880cda880b086480a541a916ce580886fa5634941d658d0af6379349d2080",
+      "patch_file": "weighted-canary-ai-gateway.patch",
+      "patch_sha256": "06f72c744edb46ec66d4aa02a50d673230426d9222f95bc4e75a47e5ac38da0f",
+      "files": {
+        "cmd/controller/main.go": {
+          "upstream_sha256": "8a79e0250ace65d5606b3182f46f70f7523d3a332e788fb2eb391de0ac18fd43",
+          "patched_sha256": "baad6aa7b99fe16ead439af9d1ad617040a22a2dbbb838cfeb641a35df67f35e"
+        },
+        "cmd/controller/main_test.go": {
+          "upstream_sha256": "dd4e6f8930c2a8ed5e36061ece1edf4b47fec1f62aa5d47107115134582b4b84",
+          "patched_sha256": "3f46854f8df4b677c56b9e46e7b26597e223bffb9fbb61e8749a3a43d01e82f1"
+        },
+        "internal/extensionserver/extensionserver_test.go": {
+          "upstream_sha256": "b43709bf8e8cccd81b1cabe63b6885a8172c738a8a65a131687c2dc437d54ba7",
+          "patched_sha256": "8dabf431f9e6f2bc87ff1488719e968670d4170d00f605ad70a951285468673c"
+        },
+        "internal/extensionserver/inferencepool.go": {
+          "upstream_sha256": "c53f4e283a9191d3cacb4318e7e2b55be6c02963be17eb6da1e84f854af77a61",
+          "patched_sha256": "6a943fa8d9a728be939f2ccf8a8392b5b3a605ac524e51cf3d770f4d22c7590d"
+        },
+        "internal/extensionserver/post_route_modify.go": {
+          "upstream_sha256": "f03325b80f03e5e77f8283e4bb42bbf000cdb04cd6d079afbbc655eeb1b75398",
+          "patched_sha256": "c6d1957308d8e85069ec1b633978a38cdcaca999cdf99ee8bf8de656fb325e43"
+        },
+        "internal/extensionserver/post_translate_modify.go": {
+          "upstream_sha256": "614d1095520a2fafa61d7b9d53c1ffd05524a98f2c8583148c299428fa64c910",
+          "patched_sha256": "88c801c9c09c41fa68bf31f6b1d9e01190785531d363f570a013f4f7b9550247"
+        },
+        "internal/extensionserver/weighted_inferencepool.go": {
+          "upstream_sha256": null,
+          "patched_sha256": "180334ef4e38bea435818575bec9c7ca92631567031137adc54e3333ea70c233"
+        },
+        "internal/extensionserver/weighted_inferencepool_test.go": {
+          "upstream_sha256": null,
+          "patched_sha256": "48939f5b1ae113c1d1e0e43756c5048a89ead57c8dee34c7bd22550f0c7f7195"
+        }
+      },
+      "module_files_unchanged": {
+        "go.mod": "d41e32f79ff7001e4fbb87cfe024d07da898bb92fbbcc7a3edd394e8db90bfdc",
+        "go.sum": "2a0d48d9c96dc8a025121b8ca4f0c0c0b065977bc867eaa829ecdeefc96d3306"
+      },
+      "archive_sha256": "f553e6d4de2c6bcf314ee5753094b0b9ceb36193c824a3e86269dc4ad1fd42f1",
+      "archive_url": "https://github.com/envoyproxy/ai-gateway/archive/refs/tags/v0.7.0.tar.gz"
+    },
+    "envoy-gateway": {
+      "version": "v1.8.1",
+      "upstream_tree_sha256": "80dd3eba46c2be31ba1bb1ddd10d71009b26cf8528a828daf49f628bc3a4cba9",
+      "patched_tree_sha256": "58d46491bcb6736ddcd59d1f937625dd9b4d567c745a4a477d50ccd499a7e050",
+      "patch_file": "weighted-canary-envoy-gateway.patch",
+      "patch_sha256": "4748d7e89010b943cc4da7ccae346cf35a1fa832f058d03b0110a2b7c1061679",
+      "files": {
+        "internal/gatewayapi/custom_backend_inference_test.go": {
+          "upstream_sha256": null,
+          "patched_sha256": "c4677809ce024be6eed3a46a640d09830637ba5a22f576186045be6b99c44a18"
+        },
+        "internal/gatewayapi/route.go": {
+          "upstream_sha256": "6f38d77fe410d593f3c0b312d1baeeaaae409e83268ae39ae9c0567fc5f33033",
+          "patched_sha256": "f30b1cff5c56afa7b728e84f9f39af7e883f2361170132bfd001a4f16421a8bb"
+        },
+        "internal/gatewayapi/testdata/extensions/httproute-with-custom-backend-mixed-multiple.out.yaml": {
+          "upstream_sha256": "5d87b6cf9e94489b23d6b71aef4a11604738a99a6495deedfa554b3a7ba677a4",
+          "patched_sha256": "fb37e87099e0be2709a370744831aef073900d12465828bcec2923f2a5c37435"
+        },
+        "internal/gatewayapi/testdata/extensions/httproute-with-custom-backend-mixed.out.yaml": {
+          "upstream_sha256": "9101bd048e12271d24ce3a4ab7685aa5353560f1869e77a960dabe7f2ba6b15d",
+          "patched_sha256": "1d5f62778129979a2f58f6894d6fe3647c69079f20ce63b22d9ad217559e1ff4"
+        },
+        "internal/gatewayapi/testdata/extensions/httproute-with-custom-backend-multiple.out.yaml": {
+          "upstream_sha256": "a90a5cc8296f865ccc241db40cfe585d71f4327995fb94b5c0dafd2f51860b29",
+          "patched_sha256": "146aee28701bd8312a11f84b08ffd5820692bd7ec99294a7baf057513ed715b1"
+        },
+        "internal/gatewayapi/testdata/extensions/httproute-with-custom-backend.out.yaml": {
+          "upstream_sha256": "36aa63845b916a94a1711cba92bbcef378bf29cfecf29d6bbb276d326f2db984",
+          "patched_sha256": "10132640a88de26ec83cd729c9fb237dd80b9c8dfa7c3108a0f94e1c082c1dc3"
+        },
+        "internal/ir/xds.go": {
+          "upstream_sha256": "b0938c7f4651571c1b05d66d995da2fef1264a90a42ec0c90c0f83cbc431dce1",
+          "patched_sha256": "7a804e1dee6df5c2d34ef72e09c09731e00c225dea9f455535386637345e497e"
+        },
+        "internal/xds/translator/custom_backend.go": {
+          "upstream_sha256": null,
+          "patched_sha256": "91dcde79768aa96cf949c86f2cde0c3f1439a829703bf5bf172db1b3fb5e3414"
+        },
+        "internal/xds/translator/custom_backend_test.go": {
+          "upstream_sha256": null,
+          "patched_sha256": "1faf8b3a7ab8acd20e544a94275c46d5733f97a3fca4a96f6c25662b7f4d2571"
+        },
+        "internal/xds/translator/route.go": {
+          "upstream_sha256": "e1599531330c846b8f6df281bbc63035460f0dbf008bbdc1b9e6fbed2f067c39",
+          "patched_sha256": "694c91d12981389e4134990b94d2b2a86cf64417866b4048debdddf74ba880df"
+        },
+        "internal/xds/translator/translator.go": {
+          "upstream_sha256": "10d78bde9079e9b2c3be626f1b28716275d3fd8670631c53137ea623ecb74aa5",
+          "patched_sha256": "9c0920a2e49355e85b4ba13b0de1a39babf8155603ccd7da73fd98218cf4b334"
+        },
+        "internal/gatewayapi/translator_test.go": {
+          "upstream_sha256": "4edfb1c85e6db9b03db0046a1be8a39a0f5c89b5223604313bb24022b751c4fd",
+          "patched_sha256": "56349f2aa086e4c28ca09a442cd082595fa359d8443bbef252adfac9f5ed63da"
+        },
+        "internal/gatewayapi/offline_discovery_test.go": {
+          "upstream_sha256": null,
+          "patched_sha256": "0d481c9628b3c8d1384f5ef48147c52587e2e9f2ddf57b4d317551c6377656b5"
+        }
+      },
+      "module_files_unchanged": {
+        "go.mod": "7e43bf15bedbb967b24ecdf3083c793e14a7fda3bf80f44207524e9bcb90e9ea",
+        "go.sum": "b1b1c07aa79a052fdb90073c0c3386032d7171713d7e30241df2ed5ae2fac8a4"
+      },
+      "go_module": "github.com/envoyproxy/gateway@v1.8.1",
+      "go_module_sum": "h1:i8POtrPtel3n0iGP55MNy6U1rTW4msyhkEWjXAF09ts=",
+      "go_mod_sum": "h1:l8bHAnc8sMfNNIcBm5p7CojxkF2AfbxKCjbPkaXIqEE=",
+      "source_inventory_note": "Exact official Go module zip, including upstream .agents files. Earlier scratch copy omitted that directory; module h1 and every patched file digest are unchanged."
+    }
+  },
+  "validation": {
+    "ai_gateway_extensionserver_tests": "pending; rerun with controller tests for updated candidate",
+    "ai_gateway_controller_build": "pending; rebuild for Secret cache scope fix",
+    "envoy_gateway_tests": "passed: full gatewayapi, ir and xds/translator packages; log benchmarks/artifacts/v1-validation/envoy-gateway-build-final.log",
+    "live_weighted_gateway_conformance": "pending",
+    "source_patch_reproduction": "passed; cached v0.7.0 archive SHA, full upstream and patched AI Gateway trees, and unchanged module files verified; zero-fuzz patch reproduction passed",
+    "ai_gateway_controller_tests": "pending; Secret namespace parsing and cache scope tests added",
+    "envoy_gateway_build": "passed; repeat with durable module layer pending"
+  },
+  "build_files": {
+    "Dockerfile.controller-canary": "d398fdeacd27faf2e2ba6e6510bf44d9c3c616071d7637df91cf4bf55d45c0e8",
+    "Dockerfile.gateway-canary": "5e96540c433a8e87e1336e685fc1b3aaa70581f8d59c401a6f3d034bd31f7a64",
+    "prepare-canary-adapter.py": "af9be1a5659071a5001577865a44e0e2a0e73e0262ab74e239a4fe38ed94414e"
+  },
+  "updated_utc": "2026-09-21"
+}

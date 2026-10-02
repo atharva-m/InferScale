@@ -55,6 +55,9 @@ func TestRenderAddsJSONMetricsExporterWithoutGPUAllocation(t *testing.T) {
 			t.Fatalf("runtime is missing engine-verification input %s: %#v", name, runtimeEnvironment)
 		}
 	}
+	if runtimeEnvironment["PREFIX_CACHING"] != "true" || runtimeEnvironment["SERVED_MODEL_NAME"] != "chat" {
+		t.Fatalf("runtime must receive requested prefix-cache setting and public model name: %#v", runtimeEnvironment)
+	}
 	if len(exporter.Ports) != 1 || exporter.Ports[0].Name != "metrics" || exporter.Ports[0].ContainerPort != metricsExporterPort {
 		t.Fatalf("exporter ports = %#v", exporter.Ports)
 	}
@@ -117,6 +120,15 @@ func TestRenderUsesNativeEndpointDrainBeforeRuntimeShutdown(t *testing.T) {
 		t.Fatalf("termination grace = %v, want %d seconds", pod.TerminationGracePeriodSeconds, platformruntime.WorkerTerminationGracePeriodSeconds)
 	}
 	runtimeContainer := pod.Containers[0]
+	var prefixCaching string
+	for _, variable := range runtimeContainer.Env {
+		if variable.Name == "PREFIX_CACHING" {
+			prefixCaching = variable.Value
+		}
+	}
+	if prefixCaching != "false" {
+		t.Fatalf("disabled prefix cache must be explicit, got %q", prefixCaching)
+	}
 	if runtimeContainer.ReadinessProbe == nil {
 		t.Fatal("runtime has no readiness probe for endpoint eligibility")
 	}

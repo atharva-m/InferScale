@@ -40,6 +40,10 @@ def _latest_snapshot(payload: object) -> Mapping[str, Any]:
         if not payload:
             raise ValueError("TensorRT-LLM metrics response is empty")
         payload = payload[-1]
+    # The engine API also documents JSON-encoded iteration entries. Decode
+    # one layer only; a malformed or non-object sample must fail the scrape.
+    if isinstance(payload, str):
+        payload = json.loads(payload)
     if not isinstance(payload, Mapping):
         raise TypeError("TensorRT-LLM metrics response must be an object or array")
     return payload
@@ -78,6 +82,12 @@ def parse_snapshot(payload: object) -> dict[str, float]:
             output["inferscale_trtllm_kv_cache_utilization_ratio"] = min(
                 used / denominator, 1.0
             )
+        # TRT 1.0 reports this native ratio as reusedBlocks divided by
+        # (reusedBlocks + missedBlocks). Do not substitute zero when absent or
+        # repair an invalid sample: benchmark qualification requires evidence.
+        hit_ratio = _number(cache.get("cacheHitRate"))
+        if hit_ratio is not None and hit_ratio <= 1:
+            output["inferscale_trtllm_prefix_cache_hit_ratio"] = hit_ratio
     return output
 
 

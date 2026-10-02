@@ -85,10 +85,13 @@ type Operation struct {
 	Status         OperationStatus `json:"status"`
 	RequestID      string          `json:"requestId,omitempty"`
 	IdempotencyKey string          `json:"idempotencyKey,omitempty"`
-	CreatedAt      time.Time       `json:"createdAt"`
-	UpdatedAt      time.Time       `json:"updatedAt"`
-	CompletedAt    *time.Time      `json:"completedAt,omitempty"`
-	Error          string          `json:"error,omitempty"`
+	// RequestDigest is an immutable fingerprint of the accepted logical
+	// mutation. It survives response-cache expiry and is never public API data.
+	RequestDigest string     `json:"-"`
+	CreatedAt     time.Time  `json:"createdAt"`
+	UpdatedAt     time.Time  `json:"updatedAt"`
+	CompletedAt   *time.Time `json:"completedAt,omitempty"`
+	Error         string     `json:"error,omitempty"`
 }
 
 type Mutation struct {

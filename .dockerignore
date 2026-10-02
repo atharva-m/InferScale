@@ -1,20 +1,65 @@
-.git
-.codex
-.agents
-bin
-dist
-coverage
-.venv
-**/__pycache__
-**/.pytest_cache
-**/.mypy_cache
-**/.ruff_cache
-.env
-.env.*
-!.env.example
+# Repository metadata and local agent configuration
+**/.git
+**/.codex
+**/.agents
+
+# Build outputs and root temporary files
+/bin/
+/dist/
+/coverage/
+**/coverage.out
+**/*.coverprofile
+/tmp/
+
+# Documentation and chart assets not used by the root build
+/docs/
+/monitoring/
+/README.md
+/AGENTS.md
+/INFERSCALE_CODEX_SPEC.md
+/.github/
+
+# Local credentials and environment files
+/.aws/
+**/.aws/
+/.ssh/
+**/.ssh/
+/.kube/
+**/.kube/
+**/.env
+**/.env.*
+!**/.env.example
+**/*.pem
+**/*.key
 **/kubeconfig*
-benchmarks/artifacts
-benchmarks/results
-**/.terraform
+
+# Python caches and packaging output
+.venv/
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/*.py[cod]
+**/*.egg-info/
+
+# Terraform state and plans
+**/.terraform/
 **/*.tfstate
 **/*.tfstate.*
+**/*.tfplan
+
+# Benchmark outputs and conformance evidence
+/benchmarks/artifacts/
+/benchmarks/results/
+/tests/conformance/gateway/evidence.json
+
+# Logs and editor/OS files
+**/*.log
+**/.DS_Store
+**/Thumbs.db
+**/*.swp
+**/*.swo
+**/*~
+**/.idea/
+**/.vscode/

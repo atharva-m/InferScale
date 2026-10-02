@@ -90,6 +90,7 @@ func (a *Adapter) Render(_ context.Context, render platformruntime.RenderContext
 						VolumeMounts: []corev1.VolumeMount{
 							{Name: "model", MountPath: "/models/current", ReadOnly: true},
 							{Name: "tmp", MountPath: "/tmp"},
+							platformruntime.WorkerSharedMemoryMount(),
 						},
 						SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: &allowPrivilegeEscalation},
 						StartupProbe:    httpProbe("/health", 120, 5),
@@ -99,6 +100,7 @@ func (a *Adapter) Render(_ context.Context, render platformruntime.RenderContext
 					Volumes: []corev1.Volume{
 						{Name: "model", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: render.ModelPath, Type: platformruntime.HostPathTypePointer(corev1.HostPathDirectory)}}},
 						{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+						platformruntime.WorkerSharedMemoryVolume(render.Spec.AcceleratorCount),
 					},
 				},
 			},

@@ -153,6 +153,11 @@ def build_prometheus_queries(
             "inferscale_runtime_kv_cache_utilization_ratio",
             runtime_selector,
         ),
+        "prefix_cache_hit_ratio": fresh(
+            f"avg({average('inferscale_runtime_prefix_cache_hit_ratio', runtime_selector)})",
+            "inferscale_runtime_prefix_cache_hit_ratio",
+            runtime_selector,
+        ),
         "queue_p95_seconds": fresh(
             "histogram_quantile(0.95, sum by (le) (increase("
             f"inferscale_router_flow_control_wait_seconds_bucket{{{epp_selector}}}[{window}]"
@@ -216,10 +221,15 @@ def validate_publishable_telemetry(
     expected_gpu_count: int,
     expected_gpu_sku: str,
     interval: MeasurementInterval,
+    *,
+    prefix_cache_enabled: bool = True,
 ) -> dict[str, object]:
     """Reject missing, stale, or ambiguous remote benchmark telemetry."""
 
-    for name in sorted(PUBLISHABLE_REQUIRED_QUERIES | {"gpu_inventory"}):
+    required = PUBLISHABLE_REQUIRED_QUERIES | {"gpu_inventory"}
+    if prefix_cache_enabled:
+        required = required | {"prefix_cache_hit_ratio"}
+    for name in sorted(required):
         series = snapshot.get(name)
         if not isinstance(series, list) or not series:
             raise ValueError(f"publishable benchmark telemetry is missing {name}")
@@ -266,7 +276,8 @@ def validate_publishable_telemetry(
         )
     return {
         "valid": True,
-        "required_queries": sorted(PUBLISHABLE_REQUIRED_QUERIES),
+        "required_queries": sorted(required - {"gpu_inventory"}),
+        "prefix_cache_enabled": prefix_cache_enabled,
         "expected_gpu_count": expected_gpu_count,
         "expected_gpu_sku": expected_gpu_sku,
         "observed_gpus": observed,

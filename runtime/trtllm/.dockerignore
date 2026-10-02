@@ -1,0 +1,6 @@
+**
+!Dockerfile
+!.dockerignore
+!entrypoint.sh
+!build-engine.sh
+!metrics_exporter.py

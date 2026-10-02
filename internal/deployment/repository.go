@@ -32,11 +32,9 @@ func NewService(repository Repository) *Service {
 }
 
 func (s *Service) Create(ctx context.Context, input CreateInput) (*Mutation, error) {
+	requestDigest := createRequestDigest(input)
 	if input.IdempotencyKey != "" {
-		if replay, err := s.replayMutation(ctx, input.TenantID, input.IdempotencyKey); err == nil {
-			if !createReplayMatches(replay, input) {
-				return nil, ErrIdempotencyConflict
-			}
+		if replay, err := s.replayMutation(ctx, input.TenantID, input.IdempotencyKey, OperationCreate, "", requestDigest); err == nil {
 			return replay, nil
 		} else if !errors.Is(err, ErrNotFound) {
 			return nil, err
@@ -47,24 +45,18 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*Mutation, err
 		return nil, err
 	}
 	operation := NewOperation(input.TenantID, d.ID, OperationCreate, input.RequestID, input.IdempotencyKey, s.now())
+	operation.RequestDigest = requestDigest
 	if err := s.repository.Create(ctx, d, revision, operation); err != nil {
 		if input.IdempotencyKey != "" {
-			if replay, replayErr := s.replayMutation(ctx, input.TenantID, input.IdempotencyKey); replayErr == nil {
-				if !createReplayMatches(replay, input) {
-					return nil, ErrIdempotencyConflict
-				}
+			if replay, replayErr := s.replayMutation(ctx, input.TenantID, input.IdempotencyKey, OperationCreate, "", requestDigest); replayErr == nil {
 				return replay, nil
+			} else if !errors.Is(replayErr, ErrNotFound) {
+				return nil, replayErr
 			}
 		}
 		return nil, err
 	}
 	return &Mutation{Deployment: d, Operation: operation}, nil
-}
-
-func createReplayMatches(replay *Mutation, input CreateInput) bool {
-	return replay != nil && replay.Operation != nil && replay.Deployment != nil &&
-		replay.Operation.Kind == OperationCreate && replay.Deployment.Name == input.Name &&
-		replay.Deployment.Namespace == input.Namespace && SpecDigest(replay.Deployment.Spec) == SpecDigest(input.Spec)
 }
 
 func (s *Service) Get(ctx context.Context, tenantID, id string) (*Deployment, error) {
@@ -89,11 +81,9 @@ func (s *Service) GetOperation(ctx context.Context, tenantID, id string) (*Opera
 }
 
 func (s *Service) Update(ctx context.Context, input UpdateInput) (*Mutation, error) {
+	requestDigest := updateRequestDigest(input)
 	if input.IdempotencyKey != "" {
-		if replay, err := s.replayMutation(ctx, input.TenantID, input.IdempotencyKey); err == nil {
-			if replay.Operation.Kind != OperationUpdate || replay.Operation.DeploymentID != input.DeploymentID {
-				return nil, ErrIdempotencyConflict
-			}
+		if replay, err := s.replayMutation(ctx, input.TenantID, input.IdempotencyKey, OperationUpdate, input.DeploymentID, requestDigest); err == nil {
 			return replay, nil
 		} else if !errors.Is(err, ErrNotFound) {
 			return nil, err
@@ -104,6 +94,15 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (*Mutation, err
 		return nil, err
 	}
 	if current.Generation != input.ExpectedGeneration {
+		// Another identical request may have committed after our first
+		// idempotency lookup but before this read of the desired generation.
+		if input.IdempotencyKey != "" {
+			if replay, replayErr := s.replayMutation(ctx, input.TenantID, input.IdempotencyKey, OperationUpdate, input.DeploymentID, requestDigest); replayErr == nil {
+				return replay, nil
+			} else if !errors.Is(replayErr, ErrNotFound) {
+				return nil, replayErr
+			}
+		}
 		return nil, ErrGenerationConflict
 	}
 	updated := *current
@@ -131,10 +130,13 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (*Mutation, err
 		updated.State = StateUpdating
 	}
 	operation := NewOperation(input.TenantID, updated.ID, OperationUpdate, input.RequestID, input.IdempotencyKey, s.now())
+	operation.RequestDigest = requestDigest
 	if err := s.repository.Update(ctx, &updated, revision, operation, input.ExpectedGeneration); err != nil {
 		if input.IdempotencyKey != "" {
-			if replay, replayErr := s.replayMutation(ctx, input.TenantID, input.IdempotencyKey); replayErr == nil {
+			if replay, replayErr := s.replayMutation(ctx, input.TenantID, input.IdempotencyKey, OperationUpdate, input.DeploymentID, requestDigest); replayErr == nil {
 				return replay, nil
+			} else if !errors.Is(replayErr, ErrNotFound) {
+				return nil, replayErr
 			}
 		}
 		return nil, err
@@ -143,21 +145,22 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (*Mutation, err
 }
 
 func (s *Service) Delete(ctx context.Context, input DeleteInput) (*Operation, error) {
+	requestDigest := deleteRequestDigest(input)
 	if input.IdempotencyKey != "" {
-		if operation, err := s.repository.FindOperationByIdempotency(ctx, input.TenantID, input.IdempotencyKey); err == nil {
-			if operation.Kind != OperationDelete || operation.DeploymentID != input.DeploymentID {
-				return nil, ErrIdempotencyConflict
-			}
+		if operation, err := s.replayOperation(ctx, input.TenantID, input.IdempotencyKey, OperationDelete, input.DeploymentID, requestDigest); err == nil {
 			return operation, nil
 		} else if !errors.Is(err, ErrNotFound) {
 			return nil, err
 		}
 	}
 	operation := NewOperation(input.TenantID, input.DeploymentID, OperationDelete, input.RequestID, input.IdempotencyKey, s.now())
+	operation.RequestDigest = requestDigest
 	if err := s.repository.SoftDelete(ctx, input.TenantID, input.DeploymentID, input.ExpectedGeneration, s.now().UTC(), operation); err != nil {
 		if input.IdempotencyKey != "" {
-			if replay, replayErr := s.repository.FindOperationByIdempotency(ctx, input.TenantID, input.IdempotencyKey); replayErr == nil {
+			if replay, replayErr := s.replayOperation(ctx, input.TenantID, input.IdempotencyKey, OperationDelete, input.DeploymentID, requestDigest); replayErr == nil {
 				return replay, nil
+			} else if !errors.Is(replayErr, ErrNotFound) {
+				return nil, replayErr
 			}
 		}
 		return nil, err
@@ -165,14 +168,35 @@ func (s *Service) Delete(ctx context.Context, input DeleteInput) (*Operation, er
 	return operation, nil
 }
 
-func (s *Service) replayMutation(ctx context.Context, tenantID, key string) (*Mutation, error) {
+func (s *Service) replayMutation(ctx context.Context, tenantID, key string, kind OperationKind, deploymentID, requestDigest string) (*Mutation, error) {
+	operation, err := s.replayOperation(ctx, tenantID, key, kind, deploymentID, requestDigest)
+	if err != nil {
+		return nil, err
+	}
+	// A replay is bound to the original operation even after later spec
+	// mutations or deletion. Read tombstones too, so retrying create cannot
+	// accidentally turn into a new create after its deployment was deleted.
+	value, err := s.repository.GetByID(ctx, operation.DeploymentID)
+	if err != nil {
+		return nil, err
+	}
+	if value == nil || value.TenantID != tenantID || value.ID != operation.DeploymentID {
+		return nil, ErrIdempotencyConflict
+	}
+	return &Mutation{Deployment: value, Operation: operation}, nil
+}
+
+func (s *Service) replayOperation(ctx context.Context, tenantID, key string, kind OperationKind, deploymentID, requestDigest string) (*Operation, error) {
 	operation, err := s.repository.FindOperationByIdempotency(ctx, tenantID, key)
 	if err != nil {
 		return nil, err
 	}
-	value, err := s.repository.Get(ctx, tenantID, operation.DeploymentID)
-	if err != nil {
-		return nil, err
+	// Old rows have no reconstructable original request. Fail closed rather
+	// than treating a mutable deployment row as proof of request identity.
+	if operation == nil || operation.TenantID != tenantID || operation.Kind != kind ||
+		operation.RequestDigest == "" || operation.RequestDigest != requestDigest ||
+		(deploymentID != "" && operation.DeploymentID != deploymentID) {
+		return nil, ErrIdempotencyConflict
 	}
-	return &Mutation{Deployment: value, Operation: operation}, nil
+	return operation, nil
 }

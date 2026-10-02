@@ -1,13 +1,13 @@
 - op: add
   path: /spec/template/spec/initContainers
   value:
-    - name: wait-for-schema-000005
+    - name: wait-for-schema-000006
       image: postgres@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7
       imagePullPolicy: IfNotPresent
       command: [/bin/sh, -ec]
       args:
         - |
-          until [ "$(psql "$INFERSCALE_DATABASE_URL" --no-password --tuples-only --no-align --set ON_ERROR_STOP=1 --command "SELECT to_regclass('public.sync_outbox') IS NOT NULL AND to_regclass('public.deployments_tenant_name_idx') IS NOT NULL AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='benchmark_runs' AND column_name='lease_owner') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='benchmark_runs' AND column_name='execution_contract') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='usage_hourly' AND column_name='revision')" 2>/dev/null)" = "t" ]; do
+          until [ "$(psql "$INFERSCALE_DATABASE_URL" --no-password --tuples-only --no-align --set ON_ERROR_STOP=1 --command "SELECT to_regclass('public.sync_outbox') IS NOT NULL AND to_regclass('public.deployments_tenant_name_idx') IS NOT NULL AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='benchmark_runs' AND column_name='lease_owner') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='benchmark_runs' AND column_name='execution_contract') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='usage_hourly' AND column_name='revision') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='operations' AND column_name='request_digest')" 2>/dev/null)" = "t" ]; do
             echo "waiting for current InferScale database schema"
             sleep 2
           done

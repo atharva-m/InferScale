@@ -28,7 +28,9 @@ type NamespaceOptions struct {
 	// KubernetesAPIServerCIDR narrows the API-server egress rule. When empty,
 	// TCP/443 is allowed as a portable fallback because NetworkPolicy cannot
 	// select the `default/kubernetes` Service by service identity.
-	KubernetesAPIServerCIDR string
+	KubernetesAPIServerCIDR  string
+	KubernetesAPIServerCIDRs []string
+	KubernetesAPIServerPort  int32
 }
 
 func NamespaceBaselineWithOptions(value *Tenant, options NamespaceOptions) []client.Object {
@@ -63,6 +65,23 @@ func NamespaceBaselineWithOptions(value *Tenant, options NamespaceOptions) []cli
 			corev1.ResourceName("requests.nvidia.com/gpu"): *apiresource.NewQuantity(int64(value.Quota.MaxGPUs)*rolloutGPUSurgeFactor, apiresource.DecimalSI),
 			corev1.ResourceName("limits.nvidia.com/gpu"):   *apiresource.NewQuantity(int64(value.Quota.MaxGPUs)*rolloutGPUSurgeFactor, apiresource.DecimalSI),
 		}},
+	}
+	containerBounds := &corev1.LimitRange{
+		TypeMeta:   metav1.TypeMeta{APIVersion: corev1.SchemeGroupVersion.String(), Kind: "LimitRange"},
+		ObjectMeta: metav1.ObjectMeta{Name: "inferscale-container-bounds", Namespace: value.Namespace, Labels: labels},
+		Spec: corev1.LimitRangeSpec{Limits: []corev1.LimitRangeItem{{
+			Type: corev1.LimitTypeContainer,
+			Min: corev1.ResourceList{
+				corev1.ResourceCPU: apiresource.MustParse("10m"), corev1.ResourceMemory: apiresource.MustParse("16Mi"),
+			},
+			DefaultRequest: corev1.ResourceList{
+				corev1.ResourceCPU: apiresource.MustParse("100m"), corev1.ResourceMemory: apiresource.MustParse("128Mi"),
+			},
+			// Do not set a namespace-wide maximum or default CPU/memory limit:
+			// Kubernetes derives default limits from container maxima, which
+			// would either reserve huge resources for EPP or cap GPU workers
+			// and engine builders below their model-dependent memory needs.
+		}}},
 	}
 	defaultDeny := &networkingv1.NetworkPolicy{
 		TypeMeta:   metav1.TypeMeta{APIVersion: networkingv1.SchemeGroupVersion.String(), Kind: "NetworkPolicy"},
@@ -111,7 +130,11 @@ func NamespaceBaselineWithOptions(value *Tenant, options NamespaceOptions) []cli
 			Ingress: []networkingv1.NetworkPolicyIngressRule{{From: []networkingv1.NetworkPolicyPeer{{
 				NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"inferscale.io/access-role": "monitoring"}},
 				PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app.kubernetes.io/name": "prometheus"}},
-			}}}},
+			}}, Ports: []networkingv1.NetworkPolicyPort{
+				networkPolicyPort(corev1.ProtocolTCP, 8000),
+				networkPolicyPort(corev1.ProtocolTCP, 9000),
+				networkPolicyPort(corev1.ProtocolTCP, 9090),
+			}}},
 		},
 	}
 	otelEgress := &networkingv1.NetworkPolicy{
@@ -151,13 +174,20 @@ func NamespaceBaselineWithOptions(value *Tenant, options NamespaceOptions) []cli
 	if options.KubernetesAPIServerCIDR != "" {
 		apiPeers = []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: options.KubernetesAPIServerCIDR}}}
 	}
+	for _, cidr := range options.KubernetesAPIServerCIDRs {
+		apiPeers = append(apiPeers, networkingv1.NetworkPolicyPeer{IPBlock: &networkingv1.IPBlock{CIDR: cidr}})
+	}
+	apiPort := options.KubernetesAPIServerPort
+	if apiPort == 0 {
+		apiPort = 443
+	}
 	apiEgress := &networkingv1.NetworkPolicy{
 		TypeMeta: metav1.TypeMeta{APIVersion: networkingv1.SchemeGroupVersion.String(), Kind: "NetworkPolicy"},
 		ObjectMeta: metav1.ObjectMeta{Name: "allow-kubernetes-api-egress", Namespace: value.Namespace, Labels: labels,
 			Annotations: map[string]string{"inferscale.io/purpose": "Kubernetes API access for EPP/control components"}},
 		Spec: networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{}, PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
-			Egress: []networkingv1.NetworkPolicyEgressRule{{To: apiPeers, Ports: []networkingv1.NetworkPolicyPort{networkPolicyPort(corev1.ProtocolTCP, 443)}}},
+			Egress: []networkingv1.NetworkPolicyEgressRule{{To: apiPeers, Ports: []networkingv1.NetworkPolicyPort{networkPolicyPort(corev1.ProtocolTCP, apiPort)}}},
 		},
 	}
 	benchmarkCallbackEgress := &networkingv1.NetworkPolicy{
@@ -201,7 +231,7 @@ func NamespaceBaselineWithOptions(value *Tenant, options NamespaceOptions) []cli
 			}},
 		},
 	}
-	return []client.Object{namespace, serviceAccount, quota, defaultDeny, dns, gateway, monitoringIngress, otelEgress, sameNamespaceEgress, httpsEgress, apiEgress, benchmarkCallbackEgress, benchmarkGatewayEgress, benchmarkPrometheusEgress}
+	return []client.Object{namespace, serviceAccount, quota, containerBounds, defaultDeny, dns, gateway, monitoringIngress, otelEgress, sameNamespaceEgress, httpsEgress, apiEgress, benchmarkCallbackEgress, benchmarkGatewayEgress, benchmarkPrometheusEgress}
 }
 
 func networkPolicyPort(protocol corev1.Protocol, port int32) networkingv1.NetworkPolicyPort {
@@ -209,20 +239,30 @@ func networkPolicyPort(protocol corev1.Protocol, port int32) networkingv1.Networ
 }
 
 type NamespaceProvisioner struct {
-	Client                  client.Client
-	FieldOwner              string
-	KubernetesAPIServerCIDR string
+	Client                   client.Client
+	FieldOwner               string
+	KubernetesAPIServerCIDR  string
+	KubernetesAPIServerCIDRs []string
+	KubernetesAPIServerPort  int32
 }
 
 func (p NamespaceProvisioner) Provision(ctx context.Context, value *Tenant) error {
 	if p.Client == nil {
 		return fmt.Errorf("tenant namespace client is not configured")
 	}
+	if p.KubernetesAPIServerPort < 0 || p.KubernetesAPIServerPort > 65535 ||
+		(p.KubernetesAPIServerPort != 0 && p.KubernetesAPIServerPort != 443 && p.KubernetesAPIServerCIDR == "" && len(p.KubernetesAPIServerCIDRs) == 0) {
+		return fmt.Errorf("a non-default Kubernetes API port requires explicit API endpoint CIDRs and a valid port")
+	}
 	fieldOwner := p.FieldOwner
 	if fieldOwner == "" {
 		fieldOwner = "inferscale-controller"
 	}
-	for _, object := range NamespaceBaselineWithOptions(value, NamespaceOptions{KubernetesAPIServerCIDR: p.KubernetesAPIServerCIDR}) {
+	for _, object := range NamespaceBaselineWithOptions(value, NamespaceOptions{
+		KubernetesAPIServerCIDR:  p.KubernetesAPIServerCIDR,
+		KubernetesAPIServerCIDRs: p.KubernetesAPIServerCIDRs,
+		KubernetesAPIServerPort:  p.KubernetesAPIServerPort,
+	}) {
 		if err := p.Client.Patch(ctx, object, client.Apply, client.FieldOwner(fieldOwner), client.ForceOwnership); err != nil {
 			return fmt.Errorf("apply tenant baseline %T %s/%s: %w", object, object.GetNamespace(), object.GetName(), err)
 		}

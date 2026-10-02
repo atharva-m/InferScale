@@ -248,7 +248,7 @@ func TestDelayedVerifierExpiryCannotDeleteNewProof(t *testing.T) {
 	if err := r.Update(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.deleteModelCacheVerifier(ctx, stale); err != nil {
+	if err := r.deleteModelCacheJob(ctx, stale); err != nil {
 		t.Fatal(err)
 	}
 	retained := &batchv1.Job{}
@@ -257,6 +257,42 @@ func TestDelayedVerifierExpiryCannotDeleteNewProof(t *testing.T) {
 	}
 	if retained.Annotations[annotationCacheVerificationEpoch] != "2" {
 		t.Fatalf("new proof was modified: %#v", retained)
+	}
+}
+
+type cacheJobDeletionClient struct {
+	client.Client
+	options client.DeleteOptions
+}
+
+func (c *cacheJobDeletionClient) Delete(ctx context.Context, object client.Object, options ...client.DeleteOption) error {
+	c.options.ApplyOptions(options)
+	return c.Client.Delete(ctx, object, options...)
+}
+
+func TestVerifierDeletionCollectsPodsWithIdentityPreconditions(t *testing.T) {
+	r, renderer, _, specs, revisions := sharedVerificationFixture(t, "node-a")
+	ctx := context.Background()
+	job, err := r.modelCacheVerifier(ctx, renderer, specs[0], revisions[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	job.UID = types.UID("verification-proof")
+	if err := r.Create(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	tracking := &cacheJobDeletionClient{Client: r.Client}
+	r.Client = tracking
+	if err := r.deleteModelCacheJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	options := tracking.options
+	if options.PropagationPolicy == nil || *options.PropagationPolicy != metav1.DeletePropagationBackground {
+		t.Fatal("replacing a cache proof would orphan its completed Pods")
+	}
+	if options.Preconditions == nil || options.Preconditions.UID == nil || *options.Preconditions.UID != job.UID ||
+		options.Preconditions.ResourceVersion == nil || *options.Preconditions.ResourceVersion != job.ResourceVersion {
+		t.Fatal("deletion could remove a concurrent replacement proof")
 	}
 }
 

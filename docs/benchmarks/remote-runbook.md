@@ -1,5 +1,10 @@
 # Remote RTX 5090 runbook
 
+For the complete Vast.ai VM setup and a non-specialist walkthrough, use
+[the single-node 4/8-GPU deployment guide](../deployment/vast-5090.md).
+The host may contain eight GPUs while each worker remains TP1/2/4. Production
+Gateway qualification is still pending; the local smoke does not clear that gate.
+
 ## Prepare one host
 
 ```bash
@@ -46,6 +51,7 @@ export API_IMAGE=registry.example/inferscale/api@sha256:<digest>
 export CONTROLLER_IMAGE=registry.example/inferscale/controller@sha256:<digest>
 export ADMISSION_IMAGE=registry.example/inferscale/admission@sha256:<digest>
 export MIGRATE_IMAGE=registry.example/inferscale/migrate@sha256:<digest>
+export INFERSCALE_GPU_NODE_NAME=<verified-kubernetes.io/hostname-label>
 export PUBLIC_BASE_URL=https://inference.example.com
 export INFERSCALE_BENCHMARK_PROVIDER=vast
 export INFERSCALE_BENCHMARK_INFERENCE_BASE_URL="${PUBLIC_BASE_URL}"
@@ -62,6 +68,11 @@ A remote release must go through `scripts/render-remote-release.sh`, which
 refuses mutable references and replaces every API, controller, admission, and
 migration image with an explicit digest. Do not apply the remote or Vast
 overlay directly for a release.
+
+Remote Grafana also requires the `inferscale-monitoring/grafana-admin` Secret
+with `username` and `password`. Create it before applying. For external storage
+and k3s API egress, use the explicit CIDR/port settings in the deployment guide;
+the default remote render otherwise retains the bundled development databases.
 
 Do not continue while `versions.lock.yaml`, `models.lock.yaml`, an image digest, rental price, or conformance evidence is unresolved.
 

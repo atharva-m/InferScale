@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import datetime as dt
 import io
 import ipaddress
 import json
+import math
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -24,6 +27,7 @@ from typing import BinaryIO
 MODEL = "hf://Qwen/Qwen3-0.6B"
 REVISION = "c1899de289a04d12100db370d81485cdf75e47ca"
 GPU = "RTX_4070"
+SUPPORTED_TENSOR_PARALLELISMS = (1, 2, 4)
 STREAM_TIMEOUT_SECONDS = 180
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_SSE_EVENT_BYTES = 64 * 1024
@@ -48,6 +52,89 @@ def flag(name: str, default: bool) -> bool:
     value = os.environ.get(name, str(default).lower())
     check(value in {"true", "false"}, f"{name} must be true or false")
     return value == "true"
+
+
+def bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    value = os.environ.get(name, str(default))
+    check(re.fullmatch(r"[0-9]+", value) is not None, f"{name} must be an integer")
+    parsed = int(value)
+    check(
+        minimum <= parsed <= maximum,
+        f"{name} must be between {minimum} and {maximum}",
+    )
+    return parsed
+
+
+def gpu_model_matches(expected: str, observed: str) -> bool:
+    """Match a configured SKU to nvidia-smi's vendor-qualified model name."""
+
+    normalize = lambda value: re.sub(r"[^a-z0-9]", "", value.lower())
+    expected_value = normalize(expected)
+    observed_value = normalize(observed)
+    return bool(expected_value) and expected_value in observed_value
+
+
+PROMETHEUS_SAMPLE = re.compile(
+    r"^(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{[^}\n]*\})?\s+"
+    r"(?P<value>[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)$"
+)
+
+
+def parse_prometheus_samples(body: str) -> dict[str, float]:
+    """Sum unlabelled and labelled samples without retaining arbitrary labels."""
+
+    values: dict[str, float] = {}
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        match = PROMETHEUS_SAMPLE.fullmatch(stripped)
+        if match is None:
+            # Prometheus permits NaN and +/-Inf sample values. They are not
+            # useful evidence for a functional smoke check and must not be
+            # silently ignored if a runtime emits them.
+            sample_value = stripped.rsplit(None, 1)[-1].lower()
+            check(
+                sample_value not in {"nan", "+nan", "-nan", "inf", "+inf", "-inf"},
+                "runtime metrics are not finite",
+            )
+            continue
+        value = float(match.group("value"))
+        check(
+            math.isfinite(value),
+            "runtime metrics are not finite",
+        )
+        name = match.group("name")
+        values[name] = values.get(name, 0.0) + value
+    return values
+
+
+def prefix_cache_metrics(body: str) -> dict[str, float]:
+    """Validate the vLLM prefix-cache counters after repeated inference."""
+
+    values = parse_prometheus_samples(body)
+
+    def first(*names: str) -> tuple[str, float] | None:
+        for name in names:
+            if name in values:
+                return name, values[name]
+        return None
+
+    queries = first("vllm:prefix_cache_queries", "vllm:prefix_cache_queries_total")
+    hits = first("vllm:prefix_cache_hits", "vllm:prefix_cache_hits_total")
+    kv_usage = first("vllm:kv_cache_usage_perc", "vllm:gpu_cache_usage_perc")
+    check(queries is not None, "vLLM prefix-cache query metric is missing")
+    check(hits is not None, "vLLM prefix-cache hit metric is missing")
+    check(kv_usage is not None, "vLLM KV-cache usage metric is missing")
+    check(queries[1] > 0, "repeated inference produced no prefix-cache queries")
+    check(hits[1] > 0, "repeated inference produced no prefix-cache hits")
+    check(0 <= kv_usage[1] <= 1, "vLLM KV-cache usage is outside the 0..1 range")
+    return {
+        "queries": queries[1],
+        "hits": hits[1],
+        "hit_ratio": hits[1] / queries[1],
+        "kv_cache_usage": kv_usage[1],
+    }
 
 
 def validate_origin(value: str) -> str:
@@ -239,8 +326,88 @@ class Smoke:
         )
         self.timeout = int(os.environ.get("INFERSCALE_GPU_WAIT_SECONDS", "1200"))
         check(60 <= self.timeout <= 3600, "wait seconds must be between 60 and 3600")
+        self.gpu_type = os.environ.get("INFERSCALE_GPU_TYPE", GPU)
+        check(
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", self.gpu_type) is not None,
+            "INFERSCALE_GPU_TYPE must be a short GPU SKU",
+        )
+        self.gpu_count = bounded_int(
+            "INFERSCALE_GPU_COUNT", 1, 1, max(SUPPORTED_TENSOR_PARALLELISMS)
+        )
+        check(
+            self.gpu_count in SUPPORTED_TENSOR_PARALLELISMS,
+            "INFERSCALE_GPU_COUNT must be 1, 2, or 4",
+        )
+        self.tensor_parallelism = bounded_int(
+            "INFERSCALE_GPU_TENSOR_PARALLELISM",
+            self.gpu_count,
+            1,
+            max(SUPPORTED_TENSOR_PARALLELISMS),
+        )
+        check(
+            self.tensor_parallelism in SUPPORTED_TENSOR_PARALLELISMS,
+            "INFERSCALE_GPU_TENSOR_PARALLELISM must be 1, 2, or 4",
+        )
+        check(
+            self.tensor_parallelism == self.gpu_count,
+            "GPU count must equal tensor parallelism in v1",
+        )
+        # The harness intentionally targets one physical node. This is the
+        # node's total allocatable capacity, which may be larger than one
+        # worker's TP degree when exercising replicas/autoscaling.
+        self.node_gpu_count = bounded_int(
+            "INFERSCALE_GPU_NODE_GPU_COUNT", self.gpu_count, 1, 8
+        )
+        check(
+            self.node_gpu_count >= self.gpu_count,
+            "INFERSCALE_GPU_NODE_GPU_COUNT must cover one worker",
+        )
+        self.prefix_caching = flag("INFERSCALE_GPU_PREFIX_CACHING", False)
+        self.routing_policy = os.environ.get(
+            "INFERSCALE_GPU_ROUTING_POLICY", "load-aware"
+        )
+        check(
+            self.routing_policy in {"round-robin", "load-aware", "prefix-aware"},
+            "INFERSCALE_GPU_ROUTING_POLICY must be round-robin, load-aware or prefix-aware",
+        )
+        check(
+            self.routing_policy != "prefix-aware" or self.prefix_caching,
+            "prefix-aware routing requires INFERSCALE_GPU_PREFIX_CACHING=true",
+        )
+        self.cache_metrics = flag("INFERSCALE_GPU_CACHE_METRICS", False)
+        check(
+            not self.cache_metrics or self.prefix_caching,
+            "INFERSCALE_GPU_CACHE_METRICS requires prefix caching",
+        )
+        self.autoscaling = flag("INFERSCALE_GPU_AUTOSCALING", False)
+        self.scale_to_zero = flag("INFERSCALE_GPU_SCALE_TO_ZERO", False)
+        self.min_replicas = bounded_int(
+            "INFERSCALE_GPU_MIN_REPLICAS", 0 if self.scale_to_zero else 1, 0, 8
+        )
+        check(
+            (self.min_replicas == 0) == self.scale_to_zero,
+            "MIN_REPLICAS=0 requires the scale-to-zero check and vice versa",
+        )
+        self.max_replicas = bounded_int(
+            "INFERSCALE_GPU_MAX_REPLICAS", 1, self.min_replicas, 8
+        )
+        if self.autoscaling:
+            check(
+                self.max_replicas > self.min_replicas,
+                "autoscaling requires INFERSCALE_GPU_MAX_REPLICAS greater than MIN_REPLICAS",
+            )
+            check(
+                self.node_gpu_count >= self.gpu_count * self.max_replicas,
+                "autoscaling requires enough GPUs for the configured maximum replicas",
+            )
         self.restart = flag("INFERSCALE_GPU_CONTROLLER_RESTART", True)
-        self.candidates = flag("INFERSCALE_GPU_CANDIDATES", True)
+        self.candidates = flag(
+            "INFERSCALE_GPU_CANDIDATES", not (self.autoscaling or self.scale_to_zero)
+        )
+        check(
+            not (self.autoscaling or self.scale_to_zero) or not self.candidates,
+            "disable candidate checks when exercising autoscaling or scale-to-zero",
+        )
         self.keep = flag("INFERSCALE_GPU_KEEP_DEPLOYMENT", False)
         self.kubectl = os.environ.get("KUBECTL", "kubectl")
         check(shutil.which(self.kubectl), "kubectl is required")
@@ -258,15 +425,27 @@ class Smoke:
             "kube_context": self.context,
             "model": MODEL,
             "model_revision": REVISION,
-            "gpu_type": GPU,
+            "gpu_type": self.gpu_type,
+            "gpu_count": self.gpu_count,
+            "tensor_parallelism": self.tensor_parallelism,
+            "prefix_caching": self.prefix_caching,
+            "routing_policy": self.routing_policy,
+            "min_replicas": self.min_replicas,
+            "max_replicas": self.max_replicas,
+            "scale_to_zero": self.scale_to_zero,
             "checks": [],
             "excluded": [
                 "performance claims",
-                "multi-GPU scaling",
                 "healthy dual-revision canary",
                 "full Gateway conformance",
             ],
         }
+        if self.gpu_count == 1:
+            self.summary["excluded"].append("multi-GPU scaling")
+        if not self.cache_metrics:
+            self.summary["excluded"].append("prefix-cache hit metrics")
+        if not self.autoscaling:
+            self.summary["excluded"].append("autoscaling burst behavior")
 
         # Ignore proxy environment variables for explicitly local requests and
         # reject redirects before a bearer credential can leave this origin.
@@ -295,7 +474,15 @@ class Smoke:
             args += ["-l", selector]
         return json.loads(self.kube(*args))["items"]
 
-    def request(self, method: str, path: str, payload=None, headers=None, stream=False):
+    def request(
+        self,
+        method: str,
+        path: str,
+        payload=None,
+        headers=None,
+        stream=False,
+        timeout: int | None = None,
+    ):
         request_headers = {
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json",
@@ -310,7 +497,8 @@ class Smoke:
         try:
             started = time.monotonic()
             with self.http.open(
-                request, timeout=STREAM_TIMEOUT_SECONDS if stream else 60
+                request,
+                timeout=timeout or (STREAM_TIMEOUT_SECONDS if stream else 60),
             ) as response:
                 if stream:
                     check(
@@ -389,13 +577,19 @@ class Smoke:
             return False
         return resource
 
-    def chat(self, stream=False):
+    def chat(self, stream=False, prefix=False, timeout: int | None = None):
+        content = "Say hello in one short sentence. /no_think"
+        if prefix:
+            # Cover several router index blocks (64 tokens each), as well as
+            # runtime cache blocks. A tiny greeting only tests runtime reuse.
+            content = "Reference material: " + "alpha beta gamma delta " * 64
+            content += "\nSummarize this in one short sentence. /no_think"
         payload = {
             "model": self.name,
             "messages": [
                 {
                     "role": "user",
-                    "content": "Say hello in one short sentence. /no_think",
+                    "content": content,
                 }
             ],
             "stream": stream,
@@ -409,10 +603,16 @@ class Smoke:
             f"/v1/deployments/{self.deployment_id}/chat/completions",
             payload,
             stream=stream,
+            timeout=timeout,
         )
         if stream:
             return result
         validate_chat(result, self.name)
+        if prefix:
+            check(
+                result.get("usage", {}).get("prompt_tokens", 0) >= 128,
+                "prefix workload is too short to cover router cache blocks",
+            )
         return True
 
     def patch_context(self, length: int):
@@ -474,6 +674,121 @@ class Smoke:
         # worker and EPP must disappear after their Deployments reach zero.
         return not self.objects("scaledobjects", selector) and not active_consumers
 
+    def runtime_metrics(self, worker: dict) -> str:
+        """Read the runtime's bounded Prometheus exposition without pod logs."""
+
+        body = self.kube(
+            "-n",
+            self.namespace,
+            "exec",
+            worker["metadata"]["name"],
+            "-c",
+            "runtime",
+            "--",
+            "python3",
+            "-c",
+            "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/metrics', timeout=10).read().decode())",
+        )
+        check(
+            len(body.encode("utf-8")) <= MAX_RESPONSE_BYTES,
+            "runtime metrics exceeded smoke-test bound",
+        )
+        return body
+
+    def available_workers(self, revision: str) -> int:
+        workers = self.objects(
+            "deployments",
+            f"{LABEL_REVISION}={revision},app.kubernetes.io/component=model-server",
+        )
+        return sum(
+            int(worker.get("status", {}).get("availableReplicas", 0))
+            for worker in workers
+        )
+
+    def exercise_autoscaling(self, revision: str) -> None:
+        """Drive a short bounded burst and require a second worker to appear."""
+
+        target = min(self.max_replicas, max(self.min_replicas + 1, 2))
+        request_count = min(
+            self.max_replicas * 4,
+            max(self.max_replicas * 2, self.min_replicas * 2),
+        )
+        check(request_count > 0, "autoscaling burst must contain requests")
+        self.stage = "autoscaling burst"
+        print(
+            f"Sending bounded autoscaling burst ({request_count} requests)...",
+            flush=True,
+        )
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(request_count, 16)
+        ) as executor:
+            futures = [executor.submit(self.chat) for _ in range(request_count)]
+            self.wait(
+                f"autoscaling to at least {target} available workers",
+                lambda: self.available_workers(revision) >= target,
+            )
+            for future in futures:
+                future.result()
+        self.summary["autoscaling_workers_observed"] = self.available_workers(revision)
+        self.passed("bounded burst scales workers without inference errors")
+
+    def exercise_scale_to_zero(self, revision: str) -> None:
+        """Let KEDA idle the worker, then wake it with one real request."""
+
+        selector = (
+            f"{LABEL_REVISION}={revision},app.kubernetes.io/component=model-server"
+        )
+        initial = self.objects("pods", selector)
+        initial_uids = {item["metadata"]["uid"] for item in initial}
+        check(bool(initial_uids), "scale-to-zero requires an initially ready worker")
+
+        def zero_minimum():
+            scalers = self.objects("scaledobjects", f"{LABEL_REVISION}={revision}")
+            return len(scalers) == 1 and scalers[0]["spec"].get("minReplicaCount") == 0
+
+        # Initial promotion starts with min=1 to verify readiness. The next
+        # reconcile restores the requested min=0; API Ready can precede it.
+        self.wait("zero-minimum autoscaler after initial promotion", zero_minimum)
+
+        def idle():
+            workloads = self.objects("deployments", selector)
+            return (
+                len(workloads) == 1
+                and workloads[0]["spec"].get("replicas") == 0
+                and workloads[0].get("status", {}).get("replicas", 0) == 0
+                and not self.objects("pods", selector)
+            )
+
+        started = time.monotonic()
+        self.wait("KEDA idle scale-down to zero (normal cooldown)", idle)
+        self.summary["scale_to_zero_idle_wait_seconds"] = round(
+            time.monotonic() - started, 3
+        )
+        check(
+            self.cr().get("status", {}).get("revision", {}).get("stable") == revision,
+            "scale-down changed the stable revision",
+        )
+        self.passed("KEDA removes idle GPU workers without manual scaling")
+        self.stage = "cold activation through Gateway/admission/EPP"
+        started = time.monotonic()
+        # The serving contract allows 900 seconds for a queued cold request.
+        # No direct replica patch, metrics injection, or retry may wake it.
+        self.chat(timeout=900)
+        elapsed = time.monotonic() - started
+        check(elapsed <= 900, "cold activation exceeded the serving deadline")
+        self.wait("ready worker after cold activation", self.ready)
+        awakened = self.objects("pods", selector)
+        check(
+            bool(awakened)
+            and all(item["metadata"]["uid"] not in initial_uids for item in awakened),
+            "cold activation did not create a new worker",
+        )
+        self.summary["scale_to_zero_activation_seconds"] = round(elapsed, 3)
+        self.summary["scale_to_zero_cache_state"] = "cache-warm"
+        self.passed(
+            "one queued inference request activates a new GPU worker and completes"
+        )
+
     def run(self):
         config = json.loads(
             self.kube(
@@ -490,6 +805,11 @@ class Smoke:
             config.get("INFERSCALE_FAKE_RUNTIME", "false") == "false",
             "selected cluster still enables the CPU fake runtime",
         )
+        check(
+            not self.scale_to_zero
+            or config.get("INFERSCALE_FEATURE_SCALE_TO_ZERO") == "true",
+            "scale-to-zero requires the cluster's scale-to-zero feature gate",
+        )
         nodes = json.loads(self.kube("get", "nodes", "-o", "json"))["items"]
         gpu_nodes = [
             node
@@ -501,13 +821,14 @@ class Smoke:
         ]
         check(
             len(gpu_nodes) == 1
-            and int(gpu_nodes[0]["status"]["allocatable"]["nvidia.com/gpu"]) == 1,
-            "smoke requires exactly one allocatable exclusive GPU",
+            and int(gpu_nodes[0]["status"]["allocatable"]["nvidia.com/gpu"])
+            == self.node_gpu_count,
+            "smoke requires one physical GPU node with the configured allocatable GPU count",
         )
         check(
             gpu_nodes[0]["metadata"].get("labels", {}).get("inferscale.io/gpu-sku")
-            == GPU,
-            "GPU node lacks the RTX_4070 SKU label",
+            == self.gpu_type,
+            f"GPU node lacks the {self.gpu_type} SKU label",
         )
         expected_image = base64.b64decode(
             self.kube(
@@ -537,18 +858,18 @@ class Smoke:
                 "backend": "vllm",
                 "precision": "bf16",
                 "quantization": "none",
-                "gpu": {"type": GPU, "count": 1},
-                "tensor_parallelism": 1,
+                "gpu": {"type": self.gpu_type, "count": self.gpu_count},
+                "tensor_parallelism": self.tensor_parallelism,
                 "max_model_len": 2048,
-                "prefix_caching": False,
-                "min_replicas": 1,
-                "max_replicas": 1,
+                "prefix_caching": self.prefix_caching,
+                "min_replicas": self.min_replicas,
+                "max_replicas": self.max_replicas,
                 "admission": {
                     "maxConcurrentRequests": 2,
                     "maxQueuedRequests": 4,
                     "priorityClass": "standard",
                 },
-                "routing": {"policy": "load-aware"},
+                "routing": {"policy": self.routing_policy},
                 "rollout": {"strategy": "progressive", "shadowPercent": 10},
                 "observability": {"tracing": True},
             },
@@ -569,7 +890,7 @@ class Smoke:
             "pods",
             f"{LABEL_REVISION}={stable},app.kubernetes.io/component=model-server",
         )
-        check(len(workers) == 1, "expected one stable GPU worker")
+        check(len(workers) == 1, "expected one stable GPU worker Deployment")
         worker = workers[0]
         runtime = next(
             container
@@ -581,13 +902,15 @@ class Smoke:
             "worker image differs from configured real runtime",
         )
         check(
-            str(runtime["resources"]["limits"].get("nvidia.com/gpu")) == "1",
-            "worker lacks one exclusive GPU limit",
+            str(runtime["resources"]["limits"].get("nvidia.com/gpu"))
+            == str(self.gpu_count),
+            "worker lacks the configured exclusive GPU limit",
         )
         environment = {item["name"]: item.get("value") for item in runtime["env"]}
         check(
-            environment.get("PREFIX_CACHING") == "false",
-            "worker did not receive prefix caching false",
+            environment.get("PREFIX_CACHING") == str(self.prefix_caching).lower()
+            and environment.get("TENSOR_PARALLELISM") == str(self.tensor_parallelism),
+            "worker did not receive the requested cache or tensor-parallel settings",
         )
         process = json.loads(
             self.kube(
@@ -603,10 +926,19 @@ class Smoke:
                 "import json; from pathlib import Path; print(json.dumps(Path('/proc/1/cmdline').read_bytes().decode().split(chr(0))))",
             )
         )
+        expected_prefix_flag = (
+            "--enable-prefix-caching"
+            if self.prefix_caching
+            else "--no-enable-prefix-caching"
+        )
+        opposite_prefix_flag = (
+            "--no-enable-prefix-caching"
+            if self.prefix_caching
+            else "--enable-prefix-caching"
+        )
         check(
-            "--no-enable-prefix-caching" in process
-            and "--enable-prefix-caching" not in process,
-            "vLLM process did not explicitly disable prefix caching",
+            expected_prefix_flag in process and opposite_prefix_flag not in process,
+            "vLLM process did not explicitly receive the requested prefix-cache setting",
         )
         self.summary["runtime_image_id"] = next(
             entry["imageID"]
@@ -633,13 +965,15 @@ class Smoke:
             "--query-gpu=name,driver_version,memory.total",
             "--format=csv,noheader,nounits",
         ).strip()
+        device_lines = [line for line in device.splitlines() if line.strip()]
         check(
-            "4070" in device and len(device.splitlines()) == 1,
-            "runtime does not see exactly one RTX 4070",
+            len(device_lines) == self.gpu_count
+            and all(gpu_model_matches(self.gpu_type, line) for line in device_lines),
+            "runtime does not see the configured number and type of GPUs",
         )
         self.summary["gpu_observation"] = device
         self.passed(
-            "real prefetch and exclusive RTX 4070 runtime become Ready with prefix caching disabled"
+            f"real prefetch and exclusive {self.gpu_type} runtime become Ready with TP={self.tensor_parallelism} and prefix caching {'enabled' if self.prefix_caching else 'disabled'}"
         )
         self.stage = "JSON inference"
         self.chat()
@@ -652,6 +986,40 @@ class Smoke:
         self.passed(
             "authenticated incremental streaming inference with positive usage and terminal SSE marker"
         )
+
+        if self.prefix_caching:
+            self.stage = "prefix cache reuse"
+            # Identical prompts make the second request eligible for a local
+            # prefix hit. The counter check is opt-in because vLLM metric
+            # names and scrape availability are runtime-image contracts.
+            self.chat(prefix=True)
+            before = (
+                prefix_cache_metrics(self.runtime_metrics(worker))
+                if self.cache_metrics
+                else None
+            )
+            self.chat(prefix=True)
+            if self.cache_metrics:
+                after = prefix_cache_metrics(self.runtime_metrics(worker))
+                check(
+                    after["hits"] > before["hits"],
+                    "repeated prefix produced no new cache hits",
+                )
+                check(
+                    after["queries"] > before["queries"],
+                    "prefix query counter did not advance",
+                )
+                self.summary["prefix_cache_metrics"] = after
+                self.summary["prefix_cache_hit_delta"] = after["hits"] - before["hits"]
+                self.passed("repeated inference produces positive prefix-cache metrics")
+            else:
+                self.passed("prefix caching remains enabled for repeated inference")
+
+        if self.scale_to_zero:
+            self.exercise_scale_to_zero(stable)
+
+        if self.autoscaling:
+            self.exercise_autoscaling(stable)
 
         if self.restart:
             self.stage = "controller restart"

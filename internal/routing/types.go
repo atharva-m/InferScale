@@ -19,6 +19,7 @@ type Config struct {
 	GatewayName         string
 	GatewayNamespace    string
 	MonitoringNamespace string
+	OTLPEndpoint        string
 	EndpointPickerPort  int32
 	MetricsPort         int32
 }

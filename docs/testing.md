@@ -87,6 +87,16 @@ spans. Unit tests cover the body-free API/admission instrumentation, and static
 tests cover the Envoy and vLLM configuration, but neither substitutes for this
 data-path check.
 
+`scripts/e2e/live-trace-conformance.sh` performs this bounded check for one
+successful non-streaming real-vLLM request against existing loopback Gateway
+and Tempo forwards. It requires all four services to have an unbroken parent
+path to the caller, scans the complete returned trace for sensitive exports,
+and writes a redacted summary with `release_signoff:false`. Setup, timeout
+bounds, and explicit coverage limits are in `scripts/e2e/README.md`.
+`bash tests/shell/trace_conformance_test.sh` runs its offline protocol, privacy,
+credential-boundary, and export-settling regressions; it does not exercise a
+live collector or substitute for pinned-image evidence.
+
 The generated-file verifier backs up and restores checked-in outputs, so a
 failure reports the precise stale files without silently rewriting a caller's
 worktree.

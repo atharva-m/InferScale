@@ -1,0 +1,44 @@
+# Rendered from the checksum-verified v0.7.0 chart by render-candidate-dependencies.py.
+# The renderer supplies the candidate controller digest and explicit secret-cache scope.
+controller:
+  fullnameOverride: ai-gateway-controller
+  replicaCount: 1
+  watch:
+    namespaces: []
+    cacheSyncTimeout: 2m
+  serviceAccount:
+    create: false
+    name: ai-gateway-controller
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: '1', memory: 512Mi}
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile: {type: RuntimeDefault}
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities: {drop: [ALL]}
+  extraEnvVars:
+    - {name: DISABLE_PPROF, value: 'true'}
+    - {name: GOMAXPROCS, value: '1'}
+    - {name: GOMEMLIMIT, value: 384MiB}
+  spanRequestHeaderAttributes: ''
+  logRequestHeaderAttributes: ''
+  quotaRateLimitFailureModeDeny: true
+  mutatingWebhook:
+    # Upstream requires this registration/certificate even for InferencePool.
+    # This unsatisfiable selector prevents sidecar injection in every namespace.
+    objectSelector:
+      matchLabels: null
+      matchExpressions:
+        - {key: inferscale.io/disable-ai-sidecar-injection, operator: Exists}
+        - {key: inferscale.io/disable-ai-sidecar-injection, operator: DoesNotExist}
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: envoy-ai-gateway-system
+extProc:
+  enableRedaction: true
+envoyGateway:
+  namespace: envoy-gateway-system

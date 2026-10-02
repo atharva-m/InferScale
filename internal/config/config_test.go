@@ -22,6 +22,34 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadKubernetesAPIEgress(t *testing.T) {
+	t.Setenv("INFERSCALE_KUBERNETES_API_CIDRS", `["10.0.0.12/32","fd00::12/128"]`)
+	t.Setenv("INFERSCALE_KUBERNETES_API_PORT", "6443")
+	t.Setenv("INFERSCALE_VALKEY_URL", "rediss://cache.example.com:6379/0")
+	cfg, err := Load()
+	if err != nil || cfg.KubernetesAPIPort != 6443 || len(cfg.KubernetesAPICIDRs) != 2 || cfg.ValkeyURL != "rediss://cache.example.com:6379/0" {
+		t.Fatalf("managed connection settings not loaded: %v", err)
+	}
+}
+
+func TestLoadRejectsUnboundedKubernetesAPIEgress(t *testing.T) {
+	for _, tc := range []struct{ cidrs, port string }{
+		{"", "6443"}, {`[]`, "6443"}, {`["0.0.0.0/0"]`, "6443"},
+		{`["10.0.0.0/8"]`, "6443"}, {`["not-an-ip"]`, "6443"},
+		{`["127.0.0.1/32"]`, "6443"}, {`["10.0.0.12/32"]`, "65536"},
+		{`["10.0.0.12/32"]`, "0"}, {`["10.0.0.12/32"]`, "-1"},
+		{`["10.0.0.12/32"]`, "bad"},
+	} {
+		t.Run(tc.cidrs+tc.port, func(t *testing.T) {
+			t.Setenv("INFERSCALE_KUBERNETES_API_CIDRS", tc.cidrs)
+			t.Setenv("INFERSCALE_KUBERNETES_API_PORT", tc.port)
+			if _, err := Load(); err == nil {
+				t.Fatal("unsafe Kubernetes API egress configuration accepted")
+			}
+		})
+	}
+}
+
 func TestLoadRejectsInvalidFeature(t *testing.T) {
 	t.Setenv("INFERSCALE_FEATURE_TRTLLM", "sometimes")
 	if _, err := Load(); err == nil {
@@ -103,8 +131,20 @@ func TestRemoteEnvironmentRequiresVerifiedGPUInventoryMapping(t *testing.T) {
 		t.Fatalf("ValidateController() error=%v, want missing inventory mapping", err)
 	}
 	cfg.GPUNodeSelectors = map[string]map[string]string{"RTX_5090": {"inferscale.io/gpu-sku": "RTX_5090"}}
+	if err := cfg.ValidateController(); err == nil || !strings.Contains(err.Error(), "kubernetes.io/hostname") {
+		t.Fatalf("ValidateController() error=%v, want unpinned node-local cache rejection", err)
+	}
+	cfg.GPUNodeSelectors["RTX_5090"]["kubernetes.io/hostname"] = "gpu-server"
 	if err := cfg.ValidateController(); err != nil {
 		t.Fatalf("ValidateController() rejected verified inventory mapping: %v", err)
+	}
+	cfg.GPUNodeSelectors["another-sku"] = map[string]string{"kubernetes.io/hostname": "another-server"}
+	if err := cfg.ValidateController(); err == nil || !strings.Contains(err.Error(), "same kubernetes.io/hostname") {
+		t.Fatalf("ValidateController() error=%v, want multi-host cache rejection", err)
+	}
+	cfg.GPUNodeSelectors["another-sku"]["kubernetes.io/hostname"] = "gpu-server"
+	if err := cfg.ValidateController(); err != nil {
+		t.Fatalf("ValidateController() rejected SKU aliases on the same host: %v", err)
 	}
 }
 

@@ -1,0 +1,77 @@
+{
+  "scope": "local candidate dependency patch; renderer and production lock require separate integration",
+  "source_repository": "https://github.com/llm-d/llm-d-router",
+  "source_tag": "v0.9.0",
+  "source_archive_url": "https://github.com/llm-d/llm-d-router/archive/refs/tags/v0.9.0.tar.gz",
+  "source_archive_filename": "llm-d-router-v0.9.0.tar.gz",
+  "source_archive_sha256": "26692fd9644c4cf82832298ead1a0a89c564742dde623c5faedcf6140d58f350",
+  "original_endpoint_picker_image": "ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0@sha256:873179822ab0895a37ea09f2112ca39a6ae50a26612561c8bfad7f9a8c5af6f5",
+  "local_image_tag": "ghcr.io/inferscale/llm-d-epp:v0.9.0-inferscale-round-robin",
+  "patch_file": "round-robin-picker.patch",
+  "patch_sha256": "f9bd0f0143fc81dbfaa1f85cb27dfe6381a0bb2c34da683a7fbff3bab291251f",
+  "files": {
+    "cmd/epp/runner/runner.go": {
+      "upstream_sha256": "b0fa80731f9c3c2db03364fa89837a7c45e446233e6a7cf02aa82c9010a7a931",
+      "patched_sha256": "c44f2f1c5830d99c3f24f5ad6af5839d41bb7fc919141f1f651ae1b738e13006"
+    },
+    "pkg/epp/framework/plugins/scheduling/picker/roundrobin/picker.go": {
+      "upstream_sha256": null,
+      "patched_sha256": "6176b4251c3286831eedc63435a70891a81801b0fc7297b9869af0b5fd7d0569"
+    },
+    "pkg/epp/framework/plugins/scheduling/picker/roundrobin/picker_test.go": {
+      "upstream_sha256": null,
+      "patched_sha256": "52af8ca335491c31b27392803e73013a5ec00a505e75dfef4ed8a26bd1b60642"
+    },
+    "pkg/epp/framework/plugins/scheduling/picker/roundrobin/README.md": {
+      "upstream_sha256": null,
+      "patched_sha256": "f998f42ca2a9f5a4186114f9f0a3dda4f90131cb6280b4b7cb57eac64b9941ec"
+    },
+    "pkg/common/observability/tracing/telemetry.go": {
+      "upstream_sha256": "598ae66dcbbf7b61a78c175f291841c40248509e17ac3b2a4b102886ca3b7e04",
+      "patched_sha256": "dc9117e709a0beba25ec262463d4c37681e161c47f7422ba184a6c87ad2a1caa"
+    },
+    "pkg/common/observability/tracing/telemetry_test.go": {
+      "upstream_sha256": "a0e4e6d3a41d0dafb3b292bac5b54442c1c91a462f426a0567e244b26094739f",
+      "patched_sha256": "3d7682b4dccd054cea2c193790e5377f4a5529c6fee506a4b465987d117f8122"
+    },
+    "pkg/epp/handlers/request.go": {
+      "upstream_sha256": "c31bea8cd874aa76a1538100b5731838a5542d6cdb20ac694a3277fbeb87d234",
+      "patched_sha256": "698826b36f33c9e75e941d07c82550178c6b1a6c5f72f47b3db7ddc1de1cb8da"
+    },
+    "pkg/epp/handlers/request_test.go": {
+      "upstream_sha256": "af0466106074eca9f88c4025586127fd0638e4942bdf229c1a36f3b3921fcf8c",
+      "patched_sha256": "60959869d6d2c47b6f673f513d600938474e5be039a7e4ab6d4069483f300008"
+    },
+    "pkg/epp/util/request/headers.go": {
+      "upstream_sha256": "4de25e42ad10da0f59464b47b446fbf5dc9401f1910ba4605a7834456d266915",
+      "patched_sha256": "8d1a126b546a274f92d513f456bb442e1f2397408b0b7b430c5f0d0d6becde59"
+    },
+    "pkg/epp/util/request/headers_test.go": {
+      "upstream_sha256": "ad158575897b14abd70c2cdf8f53840b8ccc0e28418baf9afef6eb942beb51bb",
+      "patched_sha256": "2d1e2237023b71577ea650ea2e12849f4129b843833886473bb7f41d6b33439d"
+    }
+  },
+  "module_files_unchanged": {
+    "go.mod": "cd6baee3169af6f587020534a6e61c55c41853bee3d320c08c5159752b83ab90",
+    "go.sum": "e03bbdd5eba5669e489c58753e57c4c55be54ec1b766e17935e5e67acdb21af0"
+  },
+  "dockerfile": "Dockerfile.epp-local",
+  "dockerfile_sha256": "138c66981aafbb566718eac859f11cf4dfa34f9484088c67ebc6478148eb99bd",
+  "validation": {
+    "clean_patch_application": "passed: alias fix reproduced with zero fuzz; all patched and module hashes verified",
+    "gofmt": "passed: all patched Go files formatted with bundled gofmt",
+    "race_tests": "passed 2026-09-21: roundrobin, tracing, handlers and util/request; log benchmarks/artifacts/v1-validation/epp-build.log",
+    "image_build": "passed: full EPP binary and four affected race-test packages; log benchmarks/artifacts/v1-validation/epp-build-retry.log",
+    "live_validation": "pending",
+    "durable_module_layer": "pending repeated image build"
+  },
+  "semantics": {
+    "order": "lexical namespace, pod name, address, port, rank; ignores scores",
+    "cursor_scope": "per configured picker instance within one EPP process",
+    "concurrency": "mutex-serialized cursor advancement; completion order unspecified",
+    "churn": "first eligible key after cursor, wrapping; empty candidate set preserves cursor",
+    "global_order": "not guaranteed across processes or restarts",
+    "tracing": "service.name from OTEL_SERVICE_NAME with caller default on unset/empty; service.version retained; sampled W3C parent/state retained; canonical trace headers overwrite once; absent trace context and baggage removed"
+  },
+  "built_image": "ghcr.io/inferscale/llm-d-epp@sha256:ed57697703506b6db0232ee170dcee4bc72a8e5b724946ca39045d2a449f88b2"
+}

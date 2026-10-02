@@ -22,7 +22,7 @@ job = next(
     item
     for item in documents
     if item.get("kind") == "Job"
-    and item.get("metadata", {}).get("name") == "inferscale-migrate-000005"
+    and item.get("metadata", {}).get("name") == "inferscale-migrate-000006"
 )
 container = job["spec"]["template"]["spec"]["containers"][0]
 assert container["image"] == "ghcr.io/inferscale/migrate:0.1.0-dev"
@@ -94,11 +94,12 @@ for item in documents:
     if item.get("kind") != "Deployment" or item.get("metadata", {}).get("name") not in expected:
         continue
     init_containers = item["spec"]["template"]["spec"].get("initContainers", [])
-    gate = next(value for value in init_containers if value["name"] == "wait-for-schema-000005")
+    gate = next(value for value in init_containers if value["name"] == "wait-for-schema-000006")
     assert "to_regclass('public.sync_outbox')" in gate["args"][0]
     assert "column_name='lease_owner'" in gate["args"][0]
     assert "column_name='execution_contract'" in gate["args"][0]
     assert "column_name='revision'" in gate["args"][0]
+    assert "table_name='operations' AND column_name='request_digest'" in gate["args"][0]
     assert "deployments_tenant_name_idx" in gate["args"][0]
     assert "@sha256:" in gate["image"]
     gated.add(item["metadata"]["name"])
@@ -106,4 +107,4 @@ assert gated == expected
 print("migration job and all control-plane schema gates validated")
 PY
 
-grep -Fq 'wait --for=condition=complete job/inferscale-migrate-000005' "${repo_root}/scripts/dev/up.sh"
+grep -Fq 'wait --for=condition=complete job/inferscale-migrate-000006' "${repo_root}/scripts/dev/up.sh"

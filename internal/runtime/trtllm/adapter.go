@@ -106,6 +106,7 @@ func (a *Adapter) Render(_ context.Context, render platformruntime.RenderContext
 								{Name: "model", MountPath: "/models/current", ReadOnly: true},
 								{Name: "engine", MountPath: "/engines/current", ReadOnly: true},
 								{Name: "tmp", MountPath: "/tmp"},
+								platformruntime.WorkerSharedMemoryMount(),
 							},
 							SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: &allowPrivilegeEscalation},
 							StartupProbe:    probe("/health", 120, 5),
@@ -131,6 +132,7 @@ func (a *Adapter) Render(_ context.Context, render platformruntime.RenderContext
 						{Name: "model", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: render.ModelPath, Type: platformruntime.HostPathTypePointer(corev1.HostPathDirectory)}}},
 						{Name: "engine", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: enginePath, Type: platformruntime.HostPathTypePointer(corev1.HostPathDirectory)}}},
 						{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+						platformruntime.WorkerSharedMemoryVolume(render.Spec.AcceleratorCount),
 					},
 				},
 			},
@@ -193,11 +195,13 @@ func engineBuildJob(render platformruntime.RenderContext, labels map[string]stri
 							// mounting it at /engines/current would leave the requested
 							// /engines/<key> output in the ephemeral container layer.
 							{Name: "engine", MountPath: "/engines"},
+							platformruntime.WorkerSharedMemoryMount(),
 						},
 					}},
 					Volumes: []corev1.Volume{
 						{Name: "model", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: render.ModelPath, Type: platformruntime.HostPathTypePointer(corev1.HostPathDirectory)}}},
 						{Name: "engine", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: engineRoot, Type: platformruntime.HostPathTypePointer(corev1.HostPathDirectoryOrCreate)}}},
+						platformruntime.WorkerSharedMemoryVolume(render.Spec.AcceleratorCount),
 					},
 				},
 			},
@@ -215,6 +219,7 @@ func serveEnvironment(render platformruntime.RenderContext) []corev1.EnvVar {
 		{Name: "PRECISION", Value: render.Spec.Precision},
 		{Name: "QUANTIZATION", Value: normalizedQuantization(render.Spec.Quantization)},
 		{Name: "MAX_MODEL_LEN", Value: strconv.Itoa(int(render.Spec.MaxModelLen))},
+		{Name: "PREFIX_CACHING", Value: strconv.FormatBool(render.Spec.PrefixCaching)},
 		{Name: "RUNTIME_VERSION", Value: render.Spec.RuntimeVersion},
 		{Name: "RUNTIME_IMAGE_DIGEST", Value: runtimeImageDigest(render.Spec.RuntimeVersion)},
 		{Name: "GPU_ARCHITECTURE", Value: render.Spec.AcceleratorType},

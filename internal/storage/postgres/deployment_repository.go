@@ -248,10 +248,10 @@ func (r *DeploymentRepository) scanOperation(ctx context.Context, predicate stri
 	var operation deployment.Operation
 	err := r.store.pool.QueryRow(ctx, `
 		SELECT id, tenant_id, deployment_id, kind, status, request_id,
-		       idempotency_key, created_at, updated_at, completed_at, error
+		       idempotency_key, request_digest, created_at, updated_at, completed_at, error
 		FROM operations `+predicate, arguments...).Scan(
 		&operation.ID, &operation.TenantID, &operation.DeploymentID, &operation.Kind,
-		&operation.Status, &operation.RequestID, &operation.IdempotencyKey,
+		&operation.Status, &operation.RequestID, &operation.IdempotencyKey, &operation.RequestDigest,
 		&operation.CreatedAt, &operation.UpdatedAt, &operation.CompletedAt, &operation.Error)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, deployment.ErrNotFound
@@ -366,10 +366,10 @@ func insertOperation(ctx context.Context, tx pgx.Tx, operation *deployment.Opera
 	_, err := tx.Exec(ctx, `
 		INSERT INTO operations (
 			id, tenant_id, deployment_id, kind, status, request_id,
-			idempotency_key, created_at, updated_at, completed_at, error
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+			idempotency_key, request_digest, created_at, updated_at, completed_at, error
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
 		operation.ID, operation.TenantID, operation.DeploymentID, operation.Kind,
-		operation.Status, operation.RequestID, operation.IdempotencyKey,
+		operation.Status, operation.RequestID, operation.IdempotencyKey, operation.RequestDigest,
 		operation.CreatedAt, operation.UpdatedAt, operation.CompletedAt, operation.Error)
 	return err
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
@@ -30,6 +31,9 @@ type Config struct {
 	MetricsAddr                 string
 	DatabaseURL                 string
 	ValkeyAddr                  string
+	ValkeyURL                   string
+	KubernetesAPICIDRs          []string
+	KubernetesAPIPort           int
 	PrometheusURL               string
 	OTLPEndpoint                string
 	Kubeconfig                  string
@@ -77,6 +81,8 @@ func Load() (Config, error) {
 		MetricsAddr:                 env("INFERSCALE_METRICS_ADDR", ":9090"),
 		DatabaseURL:                 os.Getenv("INFERSCALE_DATABASE_URL"),
 		ValkeyAddr:                  os.Getenv("INFERSCALE_VALKEY_ADDR"),
+		ValkeyURL:                   os.Getenv("INFERSCALE_VALKEY_URL"),
+		KubernetesAPIPort:           443,
 		PrometheusURL:               env("INFERSCALE_PROMETHEUS_URL", "http://localhost:9090"),
 		OTLPEndpoint:                os.Getenv("INFERSCALE_OTLP_ENDPOINT"),
 		Kubeconfig:                  os.Getenv("INFERSCALE_KUBECONFIG"),
@@ -122,6 +128,17 @@ func Load() (Config, error) {
 	}
 
 	var err error
+	if raw := os.Getenv("INFERSCALE_KUBERNETES_API_CIDRS"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &cfg.KubernetesAPICIDRs); err != nil {
+			return Config{}, errors.New("INFERSCALE_KUBERNETES_API_CIDRS must be a JSON array of API endpoint CIDRs")
+		}
+	}
+	if raw := os.Getenv("INFERSCALE_KUBERNETES_API_PORT"); raw != "" {
+		cfg.KubernetesAPIPort, err = strconv.Atoi(raw)
+		if err != nil || cfg.KubernetesAPIPort < 1 || cfg.KubernetesAPIPort > 65535 {
+			return Config{}, errors.New("INFERSCALE_KUBERNETES_API_PORT must be an integer")
+		}
+	}
 	if raw := os.Getenv("INFERSCALE_SHUTDOWN_TIMEOUT"); raw != "" {
 		cfg.ShutdownTimeout, err = time.ParseDuration(raw)
 		if err != nil {
@@ -166,6 +183,19 @@ func Load() (Config, error) {
 // receive nor consume runtime images, GPU inventory, or selection identities.
 func (c Config) Validate() error {
 	var problems []string
+	if c.KubernetesAPIPort < 0 || c.KubernetesAPIPort > 65535 {
+		problems = append(problems, "INFERSCALE_KUBERNETES_API_PORT must be between 1 and 65535")
+	}
+	if c.KubernetesAPIPort != 0 && c.KubernetesAPIPort != 443 && len(c.KubernetesAPICIDRs) == 0 {
+		problems = append(problems, "INFERSCALE_KUBERNETES_API_CIDRS is required for a non-default API port")
+	}
+	for _, raw := range c.KubernetesAPICIDRs {
+		prefix, err := netip.ParsePrefix(raw)
+		if err != nil || prefix.Bits() != prefix.Addr().BitLen() || !prefix.Addr().IsGlobalUnicast() || prefix.String() != raw {
+			problems = append(problems, "INFERSCALE_KUBERNETES_API_CIDRS must contain canonical /32 IPv4 or /128 IPv6 API endpoint addresses")
+			break
+		}
+	}
 	if c.HTTPAddr == "" {
 		problems = append(problems, "HTTP address is required")
 	}
@@ -256,8 +286,27 @@ func (c Config) ValidateController() error {
 	if c.Features.TensorRTLLM && strings.TrimSpace(c.TRTLLMImage) == "" {
 		problems = append(problems, "INFERSCALE_TRTLLM_IMAGE is required when TensorRT-LLM is enabled")
 	}
-	if c.Environment != "development" && c.Environment != "local-wsl" && len(c.GPUNodeSelectors) == 0 {
-		problems = append(problems, "INFERSCALE_GPU_NODE_SELECTORS must map every admitted remote GPU SKU to verified node labels")
+	if c.Environment != "development" && c.Environment != "local-wsl" {
+		if len(c.GPUNodeSelectors) == 0 {
+			problems = append(problems, "INFERSCALE_GPU_NODE_SELECTORS must map every admitted remote GPU SKU to verified node labels")
+		}
+		// The v1 model and engine caches are node-local. A SKU label alone may
+		// match several machines: one successful prefetch cannot establish that
+		// another machine has the same bytes, and cache repair is not a
+		// multi-node protocol. Keep every configured SKU on one chosen host.
+		selectedHost := ""
+		for sku, selector := range c.GPUNodeSelectors {
+			hostname := selector["kubernetes.io/hostname"]
+			if hostname == "" || strings.TrimSpace(hostname) != hostname {
+				problems = append(problems, fmt.Sprintf("INFERSCALE_GPU_NODE_SELECTORS entry %q must include the verified kubernetes.io/hostname for the single v1 GPU host", sku))
+				continue
+			}
+			if selectedHost != "" && selectedHost != hostname {
+				problems = append(problems, "INFERSCALE_GPU_NODE_SELECTORS must select the same kubernetes.io/hostname for every SKU; v1 does not replicate caches across GPU hosts")
+				break
+			}
+			selectedHost = hostname
+		}
 	}
 	if c.Features.BackendAuto {
 		if strings.TrimSpace(c.DriverCUDAFingerprint) == "" || strings.TrimSpace(c.SelectionScenarioDigest) == "" {

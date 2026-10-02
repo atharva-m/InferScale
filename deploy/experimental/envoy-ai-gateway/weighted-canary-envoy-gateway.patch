@@ -1,0 +1,433 @@
+--- a/internal/gatewayapi/custom_backend_inference_test.go
++++ b/internal/gatewayapi/custom_backend_inference_test.go
+@@ -0,0 +1,81 @@
++// Copyright Envoy Gateway Authors
++// SPDX-License-Identifier: Apache-2.0
++
++package gatewayapi
++
++import (
++	"io"
++	"os"
++	"testing"
++
++	"github.com/stretchr/testify/require"
++	corev1 "k8s.io/api/core/v1"
++	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
++	"k8s.io/apimachinery/pkg/runtime/schema"
++	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
++
++	egv1a1 "github.com/envoyproxy/gateway/api/v1alpha1"
++	"github.com/envoyproxy/gateway/internal/gatewayapi/resource"
++	"github.com/envoyproxy/gateway/internal/logging"
++)
++
++func TestInferenceBackendFiltersAndMetadata(t *testing.T) {
++	input, err := os.ReadFile("testdata/extensions/httproute-with-custom-backend-multiple.in.yaml")
++	require.NoError(t, err)
++	resources := &resource.Resources{}
++	mustUnmarshal(t, input, resources)
++	base, err := os.ReadFile("testdata/base/base.yaml")
++	require.NoError(t, err)
++	baseResources := &resource.Resources{}
++	mustUnmarshal(t, base, baseResources)
++	resources.Secrets = append(resources.Secrets, baseResources.Secrets...)
++	resources.Namespaces = append(resources.Namespaces,
++		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}},
++		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "envoy-gateway"}},
++	)
++	resources.HTTPRoutes[0].Spec.Rules = resources.HTTPRoutes[0].Spec.Rules[:1]
++	for i := range resources.HTTPRoutes[0].Spec.Rules[0].BackendRefs {
++		backend := &resources.HTTPRoutes[0].Spec.Rules[0].BackendRefs[i]
++		backend.Filters = []gwapiv1.HTTPRouteFilter{{
++			Type: gwapiv1.HTTPRouteFilterRequestHeaderModifier,
++			RequestHeaderModifier: &gwapiv1.HTTPHeaderFilter{
++				Set: []gwapiv1.HTTPHeader{{Name: "x-llm-d-inference-objective", Value: string(backend.Name) + "-interactive"}},
++			},
++		}}
++	}
++	translator := &Translator{
++		GatewayControllerName: egv1a1.GatewayControllerName,
++		GatewayClassName:      "envoy-gateway-class",
++		ControllerNamespace:   "envoy-gateway-system",
++		ExtensionGroupKinds:   []schema.GroupKind{{Group: "storage.example.io", Kind: "S3Backend"}},
++		Logger:                logging.DefaultLogger(io.Discard, egv1a1.LogLevelInfo),
++	}
++	result, err := translator.Translate(resources)
++	require.NoError(t, err)
++	checked := false
++	for _, xds := range result.XdsIR {
++		for _, listener := range xds.HTTP {
++			for _, route := range listener.Routes {
++				if route.Destination == nil {
++					continue
++				}
++				checked = true
++				require.Len(t, route.ExtensionRefs, 2)
++				require.Len(t, route.Destination.Settings, 2)
++				require.True(t, route.NeedsClusterPerSetting())
++				for i, setting := range route.Destination.Settings {
++					backend := resources.HTTPRoutes[0].Spec.Rules[0].BackendRefs[i]
++					require.True(t, setting.IsCustomBackend)
++					require.Equal(t, string(backend.Name), setting.Metadata.Name)
++					require.Equal(t, "default", setting.Metadata.Namespace)
++					require.Equal(t, "S3Backend", setting.Metadata.Kind)
++					require.NotNil(t, setting.Filters, "custom backend filters must survive translation")
++					require.Len(t, setting.Filters.AddRequestHeaders, 1)
++					require.Equal(t, []string{string(backend.Name) + "-interactive"}, setting.Filters.AddRequestHeaders[0].Value)
++					require.False(t, setting.Filters.AddRequestHeaders[0].Append)
++				}
++			}
++		}
++	}
++	require.True(t, checked, "expected a translated route")
++}
+--- a/internal/gatewayapi/offline_discovery_test.go
++++ b/internal/gatewayapi/offline_discovery_test.go
+@@ -0,0 +1,37 @@
++// Copyright Envoy Gateway Authors
++// SPDX-License-Identifier: Apache-2.0
++
++package gatewayapi
++
++import (
++	"fmt"
++	"io"
++	"net/http"
++	"strings"
++	"testing"
++)
++
++type discoveryFixtureTransport struct{}
++
++func (discoveryFixtureTransport) RoundTrip(request *http.Request) (*http.Response, error) {
++	status, body := http.StatusOK, ""
++	switch request.URL.String() {
++	case "https://accounts.google.com/.well-known/openid-configuration":
++		body = `{"authorization_endpoint":"https://accounts.google.com/o/oauth2/v2/auth","token_endpoint":"https://oauth2.googleapis.com/token"}`
++	case "https://gateway.envoyproxy.io/.well-known/openid-configuration":
++		status = http.StatusNotFound
++	default:
++		return nil, fmt.Errorf("unexpected network request in offline translation fixture: %s", request.URL)
++	}
++	return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
++}
++
++// TestTranslate's upstream golden cases depend on two public discovery URLs.
++// Keep their success/404 inputs deterministic without changing production OIDC
++// behavior or skipping any case. Dedicated discovery tests use local servers.
++func useOfflineDiscoveryFixtures(t *testing.T) {
++	t.Helper()
++	previous := http.DefaultTransport
++	http.DefaultTransport = discoveryFixtureTransport{}
++	t.Cleanup(func() { http.DefaultTransport = previous })
++}
+--- a/internal/gatewayapi/route.go
++++ b/internal/gatewayapi/route.go
+@@ -1953,11 +1953,12 @@
+ 				).WithType(gwapiv1.RouteConditionResolvedRefs)
+ 			}
+ 
+-			return &ir.DestinationSetting{
++			ds = &ir.DestinationSetting{
+ 				Name:            name,
+ 				Weight:          &weight,
+ 				IsCustomBackend: true,
+-			}, unstructuredRef, nil
++				Metadata:        buildResourceMetadata(unstructuredRef.Object, nil),
++			}
+ 		}
+ 	}
+ 
+@@ -1974,7 +1975,7 @@
+ 	}
+ 
+ 	ds.Weight = &weight
+-	return ds, nil, nil
++	return ds, unstructuredRef, nil
+ }
+ 
+ func validateDestinationSettings(destinationSettings *ir.DestinationSetting, isServiceRouting bool, kind *gwapiv1.Kind) status.Error {
+--- a/internal/gatewayapi/testdata/extensions/httproute-with-custom-backend-mixed-multiple.out.yaml
++++ b/internal/gatewayapi/testdata/extensions/httproute-with-custom-backend-mixed-multiple.out.yaml
+@@ -178,9 +178,17 @@
+             protocol: HTTP
+             weight: 1
+           - isCustomBackend: true
++            metadata:
++              kind: S3Backend
++              name: s3-backend-1
++              namespace: default
+             name: httproute/default/httproute-1/rule/0/backend/1
+             weight: 1
+           - isCustomBackend: true
++            metadata:
++              kind: S3Backend
++              name: s3-backend-2
++              namespace: default
+             name: httproute/default/httproute-1/rule/0/backend/2
+             weight: 1
+         extensionRefs:
+@@ -223,9 +231,17 @@
+           name: httproute/default/httproute-1/rule/1
+           settings:
+           - isCustomBackend: true
++            metadata:
++              kind: S3Backend
++              name: s3-backend-3
++              namespace: default
+             name: httproute/default/httproute-1/rule/1/backend/0
+             weight: 1
+           - isCustomBackend: true
++            metadata:
++              kind: S3Backend
++              name: s3-backend-4
++              namespace: default
+             name: httproute/default/httproute-1/rule/1/backend/1
+             weight: 1
+           - addressType: IP
+--- a/internal/gatewayapi/testdata/extensions/httproute-with-custom-backend-mixed.out.yaml
++++ b/internal/gatewayapi/testdata/extensions/httproute-with-custom-backend-mixed.out.yaml
+@@ -170,6 +170,10 @@
+             protocol: HTTP
+             weight: 1
+           - isCustomBackend: true
++            metadata:
++              kind: S3Backend
++              name: s3-backend-1
++              namespace: default
+             name: httproute/default/httproute-1/rule/0/backend/1
+             weight: 1
+         extensionRefs:
+@@ -202,6 +206,10 @@
+           name: httproute/default/httproute-1/rule/1
+           settings:
+           - isCustomBackend: true
++            metadata:
++              kind: S3Backend
++              name: s3-backend-2
++              namespace: default
+             name: httproute/default/httproute-1/rule/1/backend/0
+             weight: 1
+           - addressType: IP
+--- a/internal/gatewayapi/testdata/extensions/httproute-with-custom-backend-multiple.out.yaml
++++ b/internal/gatewayapi/testdata/extensions/httproute-with-custom-backend-multiple.out.yaml
+@@ -162,9 +162,17 @@
+           name: httproute/default/httproute-1/rule/0
+           settings:
+           - isCustomBackend: true
++            metadata:
++              kind: S3Backend
++              name: s3-backend-1
++              namespace: default
+             name: httproute/default/httproute-1/rule/0/backend/0
+             weight: 1
+           - isCustomBackend: true
++            metadata:
++              kind: S3Backend
++              name: s3-backend-2
++              namespace: default
+             name: httproute/default/httproute-1/rule/0/backend/1
+             weight: 1
+         extensionRefs:
+@@ -207,9 +215,17 @@
+           name: httproute/default/httproute-1/rule/1
+           settings:
+           - isCustomBackend: true
++            metadata:
++              kind: S3Backend
++              name: s3-backend-3
++              namespace: default
+             name: httproute/default/httproute-1/rule/1/backend/0
+             weight: 1
+           - isCustomBackend: true
++            metadata:
++              kind: S3Backend
++              name: s3-backend-4
++              namespace: default
+             name: httproute/default/httproute-1/rule/1/backend/1
+             weight: 1
+         extensionRefs:
+--- a/internal/gatewayapi/testdata/extensions/httproute-with-custom-backend.out.yaml
++++ b/internal/gatewayapi/testdata/extensions/httproute-with-custom-backend.out.yaml
+@@ -154,6 +154,10 @@
+           name: httproute/default/httproute-1/rule/1
+           settings:
+           - isCustomBackend: true
++            metadata:
++              kind: LambdaBackend
++              name: lambda-backend
++              namespace: default
+             name: httproute/default/httproute-1/rule/1/backend/0
+             weight: 1
+         extensionRefs:
+@@ -186,6 +190,10 @@
+           name: httproute/default/httproute-1/rule/0
+           settings:
+           - isCustomBackend: true
++            metadata:
++              kind: S3Backend
++              name: s3-backend
++              namespace: default
+             name: httproute/default/httproute-1/rule/0/backend/0
+             weight: 1
+         extensionRefs:
+--- a/internal/gatewayapi/translator_test.go
++++ b/internal/gatewayapi/translator_test.go
+@@ -48,6 +48,7 @@
+ }
+ 
+ func TestTranslate(t *testing.T) {
++	useOfflineDiscoveryFixtures(t)
+ 	testCasesConfig := []struct {
+ 		name                            string
+ 		EnvoyPatchPolicyEnabled         bool
+--- a/internal/ir/xds.go
++++ b/internal/ir/xds.go
+@@ -1909,6 +1909,16 @@
+ }
+ 
+ func (r *RouteDestination) NeedsClusterPerSetting() bool {
++	// A custom backend may carry its own external processor and endpoint
++	// selection contract. Combining distinct custom backends in one cluster
++	// loses that identity before the extension translation hooks run.
++	if len(r.Settings) > 1 {
++		for _, setting := range r.Settings {
++			if setting.IsCustomBackend {
++				return true
++			}
++		}
++	}
+ 	return r.HasMixedEndpoints() ||
+ 		r.HasFiltersInSettings() ||
+ 		(len(r.Settings) > 1 && r.HasPreferLocalZone()) ||
+--- a/internal/xds/translator/custom_backend.go
++++ b/internal/xds/translator/custom_backend.go
+@@ -0,0 +1,34 @@
++// Copyright Envoy Gateway Authors
++// SPDX-License-Identifier: Apache-2.0
++
++package translator
++
++import (
++	"github.com/envoyproxy/gateway/internal/ir"
++	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
++)
++
++// extensionResourcesForSetting keeps route-level extension filters but supplies
++// only this cluster's custom backend resource. Sending every backend to each
++// cluster hook makes the selected InferencePool ambiguous during a canary.
++func extensionResourcesForSetting(setting *ir.DestinationSetting, settings []*ir.DestinationSetting, resources []*unstructured.Unstructured) []*unstructured.Unstructured {
++	var selected []*unstructured.Unstructured
++	for _, resource := range resources {
++		isBackend := false
++		matchesSetting := false
++		for _, candidate := range settings {
++			if !candidate.IsCustomBackend || candidate.Metadata == nil {
++				continue
++			}
++			metadata := candidate.Metadata
++			if resource.GetKind() == metadata.Kind && resource.GetNamespace() == metadata.Namespace && resource.GetName() == metadata.Name {
++				isBackend = true
++				matchesSetting = matchesSetting || candidate == setting
++			}
++		}
++		if !isBackend || matchesSetting {
++			selected = append(selected, resource)
++		}
++	}
++	return selected
++}
+--- a/internal/xds/translator/custom_backend_test.go
++++ b/internal/xds/translator/custom_backend_test.go
+@@ -0,0 +1,61 @@
++// Copyright Envoy Gateway Authors
++// SPDX-License-Identifier: Apache-2.0
++
++package translator
++
++import (
++	"testing"
++
++	"github.com/envoyproxy/gateway/internal/ir"
++	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
++	"github.com/stretchr/testify/require"
++	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
++)
++
++func TestInferenceClusterGetsOnlyItsBackendResource(t *testing.T) {
++	resource := func(kind, namespace, name string) *unstructured.Unstructured {
++		obj := &unstructured.Unstructured{}
++		obj.SetKind(kind)
++		obj.SetNamespace(namespace)
++		obj.SetName(name)
++		return obj
++	}
++	stable := &ir.DestinationSetting{IsCustomBackend: true, Metadata: &ir.ResourceMetadata{Kind: "InferencePool", Namespace: "tenant", Name: "stable"}}
++	candidate := &ir.DestinationSetting{IsCustomBackend: true, Metadata: &ir.ResourceMetadata{Kind: "InferencePool", Namespace: "tenant", Name: "candidate"}}
++	service := &ir.DestinationSetting{Metadata: &ir.ResourceMetadata{Kind: "Service", Namespace: "tenant", Name: "mirror"}}
++	settings := []*ir.DestinationSetting{stable, candidate, service}
++	stableResource := resource("InferencePool", "tenant", "stable")
++	candidateResource := resource("InferencePool", "tenant", "candidate")
++	routeFilter := resource("SomeFilter", "tenant", "policy")
++	resources := []*unstructured.Unstructured{candidateResource, routeFilter, stableResource}
++	require.Equal(t, []*unstructured.Unstructured{routeFilter, stableResource}, extensionResourcesForSetting(stable, settings, resources))
++	require.Equal(t, []*unstructured.Unstructured{candidateResource, routeFilter}, extensionResourcesForSetting(candidate, settings, resources))
++	require.Equal(t, []*unstructured.Unstructured{routeFilter}, extensionResourcesForSetting(service, settings, resources))
++	require.Len(t, resources, 3, "must not mutate shared route extension resources")
++	settings = []*ir.DestinationSetting{stable, candidate}
++	destination := &ir.RouteDestination{Settings: settings}
++	require.True(t, destination.NeedsClusterPerSetting(), "pool identity survives even without backend filters")
++}
++
++func TestInferenceWeightedClustersKeepCustomBackendsAndHeaders(t *testing.T) {
++	settings := []*ir.DestinationSetting{}
++	for _, backend := range []struct {
++		name   string
++		weight uint32
++	}{{"stable", 95}, {"candidate", 5}} {
++		settings = append(settings, &ir.DestinationSetting{
++			Name: backend.name, Weight: new(backend.weight), IsCustomBackend: true,
++			Filters: &ir.DestinationFilters{AddRequestHeaders: []ir.AddHeader{{Name: "x-llm-d-inference-objective", Value: []string{backend.name + "-interactive"}}}},
++		})
++	}
++	destination := &ir.RouteDestination{Name: "deployment", Settings: settings}
++	weighted := buildXdsWeightedRouteAction(destination.ToBackendWeights(), settings).GetWeightedClusters()
++	require.Len(t, weighted.Clusters, 2, "custom backends have no static endpoints but are routable")
++	for index, cluster := range weighted.Clusters {
++		require.Equal(t, settings[index].Name, cluster.Name)
++		require.Equal(t, *settings[index].Weight, cluster.Weight.Value)
++		require.Len(t, cluster.RequestHeadersToAdd, 1)
++		require.Equal(t, settings[index].Name+"-interactive", cluster.RequestHeadersToAdd[0].Header.Value)
++		require.Equal(t, corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD, cluster.RequestHeadersToAdd[0].AppendAction)
++	}
++}
+--- a/internal/xds/translator/route.go
++++ b/internal/xds/translator/route.go
+@@ -348,7 +348,7 @@
+ 	}
+ 
+ 	for _, destinationSetting := range settings {
+-		if len(destinationSetting.Endpoints) > 0 || destinationSetting.IsDynamicResolver { // Dynamic resolver has no endpoints
++		if len(destinationSetting.Endpoints) > 0 || destinationSetting.IsDynamicResolver || destinationSetting.IsCustomBackend { // Custom backends and dynamic resolvers have no endpoints.
+ 			validCluster := &routev3.WeightedCluster_ClusterWeight{
+ 				Name:   destinationSetting.Name,
+ 				Weight: &wrapperspb.UInt32Value{Value: *destinationSetting.Weight},
+--- a/internal/xds/translator/translator.go
++++ b/internal/xds/translator/translator.go
+@@ -624,12 +624,14 @@
+ 			} else {
+ 				for _, setting := range httpRoute.Destination.Settings {
+ 					tSettings := []*ir.DestinationSetting{setting}
++					settingArgs := *ea
++					settingArgs.unstructuredRefs = extensionResourcesForSetting(setting, httpRoute.Destination.Settings, extensionResources)
+ 					err = processXdsCluster(
+ 						tCtx,
+ 						setting.Name,
+ 						tSettings,
+ 						&HTTPRouteTranslator{httpRoute},
+-						ea,
++						&settingArgs,
+ 						httpRoute.Destination.Metadata)
+ 					if err != nil {
+ 						errs = errors.Join(errs, err)

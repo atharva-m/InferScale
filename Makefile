@@ -6,6 +6,7 @@ PYTHON ?= python3
 KUBECTL ?= kubectl
 CONTROLLER_GEN ?= $(GO) run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.20.0
 BENCH_PYTHONPATH := benchmarks/runner
+PYTHON_SOURCES := benchmarks/runner benchmarks/analysis modelcache runtime/trtllm
 CRD_FILE := platform.inferscale.io_inferencedeployments.yaml
 
 .PHONY: help dev-up dev-status dev-down baseline-up baseline-down baseline-run generate verify-generated fmt lint test test-go test-python test-shell e2e-local e2e-local-live e2e-local-gpu conformance-static release-check verify-manifests migrate build clean
@@ -50,13 +51,13 @@ verify-generated: ## Fail when checked-in generated artifacts are stale.
 	./hack/verify-generated.sh
 
 fmt: ## Format Go and Python sources.
-	gofmt -w $$(find . -name '*.go' -not -path './vendor/*')
-	$(PYTHON) -m ruff format benchmarks modelcache runtime/trtllm
+	gofmt -w $$(find api cmd hack internal tests -name '*.go')
+	$(PYTHON) -m ruff format $(PYTHON_SOURCES)
 
 lint: ## Run static checks without rewriting files.
 	$(GO) vet ./...
-	$(PYTHON) -m ruff check benchmarks modelcache runtime/trtllm
-	$(PYTHON) -m mypy benchmarks modelcache runtime/trtllm/metrics_exporter.py runtime/trtllm/test_metrics_exporter.py
+	$(PYTHON) -m ruff check $(PYTHON_SOURCES)
+	PYTHONPATH=$(BENCH_PYTHONPATH) $(PYTHON) -m mypy $(PYTHON_SOURCES)
 
 test: test-go test-python test-shell verify-manifests ## Run all hardware-independent tests.
 
@@ -64,7 +65,7 @@ test-go: ## Run Go unit and integration tests.
 	$(GO) test -race ./...
 
 test-python: ## Run Python unit tests.
-	$(PYTHON) -m pytest benchmarks modelcache runtime/trtllm/test_metrics_exporter.py
+	PYTHONPATH=$(BENCH_PYTHONPATH) $(PYTHON) -m pytest benchmarks/runner/tests modelcache/tests runtime/trtllm/test_metrics_exporter.py
 
 test-shell: ## Validate runtime entrypoints and migration gates.
 	bash tests/shell/runtime_entrypoints_test.sh
@@ -74,8 +75,13 @@ test-shell: ## Validate runtime entrypoints and migration gates.
 	bash tests/shell/local_fake_runtime_test.sh
 	bash tests/shell/live_local_stack_test.sh
 	bash tests/shell/live_local_gpu_test.sh
+	bash tests/shell/gateway_conformance_test.sh
+	bash tests/shell/auth_fault_conformance_test.sh
+	bash tests/shell/trace_conformance_test.sh
 	bash tests/shell/remote_release_images_test.sh
 	bash tests/shell/platform_dependencies_test.sh
+	bash tests/shell/candidate_dependencies_test.sh
+	bash tests/shell/gpu_host_bootstrap_test.sh
 
 verify-manifests: ## Render every checked-in Kustomize overlay.
 	@for overlay in deploy/overlays/*; do $(KUBECTL) kustomize "$$overlay" >/dev/null; done

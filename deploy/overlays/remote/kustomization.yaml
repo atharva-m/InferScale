@@ -22,6 +22,7 @@ generatorOptions:
 patches:
   - path: api-replicas.yaml
   - path: gateway-tls.yaml
+  - path: grafana-auth.yaml
 images:
   # Deliberately non-routable sentinels. A remote release is rendered only by
   # scripts/render-remote-release.sh, which replaces all four with caller-

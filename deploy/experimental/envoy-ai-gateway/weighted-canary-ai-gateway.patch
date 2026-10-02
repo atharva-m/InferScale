@@ -1,0 +1,903 @@
+--- a/cmd/controller/main.go
++++ b/cmd/controller/main.go
+@@ -23,6 +23,7 @@
+ 	"google.golang.org/grpc/health/grpc_health_v1"
+ 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
+ 	corev1 "k8s.io/api/core/v1"
++	"k8s.io/apimachinery/pkg/util/validation"
+ 	ctrl "sigs.k8s.io/controller-runtime"
+ 	"sigs.k8s.io/controller-runtime/pkg/cache"
+ 	"sigs.k8s.io/controller-runtime/pkg/client"
+@@ -68,6 +69,7 @@
+ 	mcpSessionEncryptionIterations         int
+ 	mcpFallbackSessionEncryptionIterations int
+ 	watchNamespaces                        []string
++	secretNamespaces                       []string
+ 	cacheSyncTimeout                       time.Duration
+ 	quotaRateLimitServiceAddr              string
+ 	quotaRateLimitTimeout                  int64
+@@ -222,6 +224,11 @@
+ 		"watchNamespaces",
+ 		"",
+ 		"Comma-separated list of namespaces to watch. If not set, the controller watches all namespaces.",
++	)
++	secretNamespaces := fs.String(
++		"secretNamespaces",
++		"",
++		"Comma-separated list of namespaces to watch for Secrets, overriding watchNamespaces for Secrets only. If omitted, Secrets use watchNamespaces. An explicitly empty value is rejected.",
+ 	)
+ 	cacheSyncTimeout := fs.Duration(
+ 		"cacheSyncTimeout",
+@@ -325,6 +332,22 @@
+ 	}
+ 	if *mcpFallbackSessionEncryptionSeed != "" && *mcpFallbackSessionEncryptionIterations <= 0 {
+ 		return nil, fmt.Errorf("mcp fallback session encryption iterations must be positive: %d", *mcpFallbackSessionEncryptionIterations)
++	}
++
++	parsedSecretNamespaces := parseWatchNamespaces(*secretNamespaces)
++	secretNamespacesSet := false
++	fs.Visit(func(f *flag.Flag) {
++		if f.Name == "secretNamespaces" {
++			secretNamespacesSet = true
++		}
++	})
++	if secretNamespacesSet && len(parsedSecretNamespaces) == 0 {
++		return nil, fmt.Errorf("secretNamespaces must contain at least one namespace when specified")
++	}
++	for _, ns := range parsedSecretNamespaces {
++		if problems := validation.IsDNS1123Label(ns); len(problems) > 0 {
++			return nil, fmt.Errorf("invalid secret namespace %q: %s", ns, strings.Join(problems, "; "))
++		}
+ 	}
+ 
+ 	return &flags{
+@@ -351,6 +374,7 @@
+ 		extProcMaxRecvMsgSize:                  *extProcMaxRecvMsgSize,
+ 		maxRecvMsgSize:                         *maxRecvMsgSize,
+ 		watchNamespaces:                        parseWatchNamespaces(*watchNamespaces),
++		secretNamespaces:                       parsedSecretNamespaces,
+ 		cacheSyncTimeout:                       *cacheSyncTimeout,
+ 		mcpSessionEncryptionSeed:               *mcpSessionEncryptionSeed,
+ 		mcpFallbackSessionEncryptionSeed:       *mcpFallbackSessionEncryptionSeed,
+@@ -380,7 +404,7 @@
+ 		os.Exit(1)
+ 	}
+ 
+-	setupLog.Info("configuring kubernetes cache", "watch-namespaces", parsedFlags.watchNamespaces, "sync-timeout", parsedFlags.cacheSyncTimeout)
++	setupLog.Info("configuring kubernetes cache", "watch-namespaces", parsedFlags.watchNamespaces, "secret-namespaces", parsedFlags.secretNamespaces, "sync-timeout", parsedFlags.cacheSyncTimeout)
+ 
+ 	ctx := ctrl.SetupSignalHandler()
+ 	pprof.Run(ctx)
+@@ -510,8 +534,20 @@
+ 		}
+ 	}
+ 
+-	return cache.Options{
++	options := cache.Options{
+ 		DefaultNamespaces: namespaceCacheConfig,
+ 		DefaultTransform:  cache.TransformStripManagedFields(),
+ 	}
+-}
++	if len(f.secretNamespaces) > 0 {
++		secretCacheConfig := make(map[string]cache.Config, len(f.secretNamespaces))
++		for _, ns := range f.secretNamespaces {
++			secretCacheConfig[ns] = cache.Config{}
++		}
++		// Pools and other resources retain watchNamespaces, so new tenant
++		// namespaces can be discovered without cluster-wide Secret watches.
++		options.ByObject = map[client.Object]cache.ByObject{
++			&corev1.Secret{}: {Namespaces: secretCacheConfig},
++		}
++	}
++	return options
++}
+--- a/cmd/controller/main_test.go
++++ b/cmd/controller/main_test.go
+@@ -36,6 +36,7 @@
+ 		require.Equal(t, 4*1024*1024, f.maxRecvMsgSize)
+ 		require.Nil(t, f.spanRequestHeaderAttributes)
+ 		require.Nil(t, f.logRequestHeaderAttributes)
++		require.Nil(t, f.secretNamespaces)
+ 		require.NoError(t, err)
+ 	})
+ 	t.Run("all flags", func(t *testing.T) {
+@@ -63,6 +64,7 @@
+ 					tc.dash + "endpointPrefixes=openai:/v1,cohere:/cohere/v2,anthropic:/anthropic/v1",
+ 					tc.dash + "maxRecvMsgSize=33554432",
+ 					tc.dash + "watchNamespaces=default,envoy-ai-gateway-system",
++					tc.dash + "secretNamespaces=envoy-ai-gateway-system",
+ 					tc.dash + "cacheSyncTimeout=5m",
+ 					tc.dash + "mcpSessionEncryptionSeed=my-seed",
+ 					tc.dash + "mcpSessionEncryptionIterations=100",
+@@ -88,6 +90,7 @@
+ 				require.Equal(t, "openai:/v1,cohere:/cohere/v2,anthropic:/anthropic/v1", f.endpointPrefixes)
+ 				require.Equal(t, 32*1024*1024, f.maxRecvMsgSize)
+ 				require.Equal(t, []string{"default", "envoy-ai-gateway-system"}, f.watchNamespaces)
++				require.Equal(t, []string{"envoy-ai-gateway-system"}, f.secretNamespaces)
+ 				require.Equal(t, 5*time.Minute, f.cacheSyncTimeout)
+ 				require.Equal(t, "my-seed", f.mcpSessionEncryptionSeed)
+ 				require.Equal(t, 100, f.mcpSessionEncryptionIterations)
+@@ -317,12 +320,71 @@
+ 	}
+ }
+ 
++func Test_parseAndValidateFlags_secretNamespaces(t *testing.T) {
++	for _, tc := range []struct {
++		name     string
++		args     []string
++		expected []string
++		expErr   string
++	}{
++		{name: "omitted inherits watch namespaces"},
++		{name: "explicit empty is rejected", args: []string{"--secretNamespaces="}, expErr: "secretNamespaces must contain at least one namespace when specified"},
++		{
++			name:     "single namespace",
++			args:     []string{"--secretNamespaces=envoy-ai-gateway-system"},
++			expected: []string{"envoy-ai-gateway-system"},
++		},
++		{
++			name:     "candidate namespaces",
++			args:     []string{"--watchNamespaces=", "--secretNamespaces=envoy-ai-gateway-system,inferscale-gateway"},
++			expected: []string{"envoy-ai-gateway-system", "inferscale-gateway"},
++		},
++		{
++			name:     "whitespace and empty entries",
++			args:     []string{"--secretNamespaces= envoy-ai-gateway-system, ,inferscale-gateway, "},
++			expected: []string{"envoy-ai-gateway-system", "inferscale-gateway"},
++		},
++		{
++			name:   "commas cannot broaden access",
++			args:   []string{"--secretNamespaces=,,,"},
++			expErr: "secretNamespaces must contain at least one namespace when specified",
++		},
++		{
++			name:   "whitespace cannot broaden access",
++			args:   []string{"--secretNamespaces=  "},
++			expErr: "secretNamespaces must contain at least one namespace when specified",
++		},
++		{
++			name:   "wildcard rejected",
++			args:   []string{"--secretNamespaces=*"},
++			expErr: `invalid secret namespace "*"`,
++		},
++		{
++			name:   "invalid namespace rejected",
++			args:   []string{"--secretNamespaces=inferscale-gateway,Invalid_Namespace"},
++			expErr: `invalid secret namespace "Invalid_Namespace"`,
++		},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			f, err := parseAndValidateFlags(tc.args)
++			if tc.expErr != "" {
++				require.ErrorContains(t, err, tc.expErr)
++				require.Nil(t, f)
++				return
++			}
++			require.NoError(t, err)
++			require.Equal(t, tc.expected, f.secretNamespaces)
++		})
++	}
++}
++
+ func TestSetupCache(t *testing.T) {
+ 	t.Run("default", func(t *testing.T) {
+ 		c := setupCache(&flags{})
+ 
+ 		require.NotNil(t, c.DefaultTransform)
+ 		require.Nil(t, c.DefaultNamespaces)
++		require.Nil(t, c.ByObject)
+ 	})
+ 
+ 	t.Run("empty watch namespaces", func(t *testing.T) {
+@@ -330,6 +392,7 @@
+ 
+ 		require.NotNil(t, c.DefaultTransform)
+ 		require.Nil(t, c.DefaultNamespaces)
++		require.Nil(t, c.ByObject)
+ 	})
+ 
+ 	t.Run("watch namespaces", func(t *testing.T) {
+@@ -340,5 +403,50 @@
+ 			"default":                 {},
+ 			"envoy-ai-gateway-system": {},
+ 		}, c.DefaultNamespaces)
+-	})
+-}
++		require.Nil(t, c.ByObject)
++	})
++}
++
++func TestSetupCacheSecretNamespaces(t *testing.T) {
++	for _, tc := range []struct {
++		name              string
++		args              []string
++		defaultNamespaces map[string]cache.Config
++	}{
++		{
++			name: "all tenant pools with restricted secrets",
++			args: []string{"--watchNamespaces=", "--secretNamespaces=envoy-ai-gateway-system,inferscale-gateway"},
++		},
++		{
++			name: "restricted secrets do not change other resource namespaces",
++			args: []string{"--watchNamespaces=tenant-a,tenant-b", "--secretNamespaces=envoy-ai-gateway-system,inferscale-gateway"},
++			defaultNamespaces: map[string]cache.Config{
++				"tenant-a": {},
++				"tenant-b": {},
++			},
++		},
++		{
++			name: "duplicate and empty entries cannot enable all namespace secrets",
++			args: []string{"--secretNamespaces=envoy-ai-gateway-system,,inferscale-gateway,inferscale-gateway,"},
++		},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			f, err := parseAndValidateFlags(tc.args)
++			require.NoError(t, err)
++			c := setupCache(f)
++			require.NotNil(t, c.DefaultTransform)
++			require.Equal(t, tc.defaultNamespaces, c.DefaultNamespaces)
++			// Only Secrets receive an override; InferencePools and all other
++			// resources still use DefaultNamespaces, including future tenants.
++			require.Len(t, c.ByObject, 1)
++			for object, options := range c.ByObject {
++				require.IsType(t, &corev1.Secret{}, object)
++				require.Equal(t, map[string]cache.Config{
++					"envoy-ai-gateway-system": {},
++					"inferscale-gateway":      {},
++				}, options.Namespaces)
++				require.NotContains(t, options.Namespaces, cache.AllNamespaces)
++			}
++		})
++	}
++}
+--- a/internal/extensionserver/extensionserver_test.go
++++ b/internal/extensionserver/extensionserver_test.go
+@@ -806,6 +806,58 @@
+ 		// Should identify and process InferencePool routes.
+ 	})
+ 
++	t.Run("shared pool across four route rules", func(t *testing.T) {
++		listener := createListener("test-listener", "test-route-config")
++		hcm := &httpconnectionmanagerv3.HttpConnectionManager{}
++		require.NoError(t, listener.DefaultFilterChain.Filters[0].GetTypedConfig().UnmarshalTo(hcm))
++		hcm.HttpFilters = append([]*httpconnectionmanagerv3.HttpFilter{
++			{Name: "envoy.filters.http.ext_authz"},
++		}, hcm.HttpFilters...)
++		listener.DefaultFilterChain.Filters[0].ConfigType = &listenerv3.Filter_TypedConfig{TypedConfig: mustToAny(t, hcm)}
++
++		var poolRoutes, originalPoolRoutes []*routev3.Route
++		for _, name := range []string{"interactive", "standard", "batch", "default"} {
++			route := createRouteWithInferencePool(name)
++			poolRoutes = append(poolRoutes, route)
++			originalPoolRoutes = append(originalPoolRoutes, proto.Clone(route).(*routev3.Route))
++		}
++		normalRoute := &routev3.Route{Name: "normal-route"}
++		routes := []*routev3.RouteConfiguration{{
++			Name: "test-route-config",
++			VirtualHosts: []*routev3.VirtualHost{{
++				Name:   "test-vh",
++				Routes: append(poolRoutes, normalRoute),
++			}},
++		}}
++		const poolFilterName = "envoy.filters.http.ext_proc/endpointpicker/test-pool_test-ns_ext_proc"
++
++		// Verify both the first translation and a repeated translation. Every
++		// priority rule must share one EPP stream, with authorization first.
++		for range 2 {
++			require.NoError(t, s.maybeModifyListenerAndRoutes([]*listenerv3.Listener{listener}, routes))
++			hcm.Reset()
++			require.NoError(t, listener.DefaultFilterChain.Filters[0].GetTypedConfig().UnmarshalTo(hcm))
++			require.Len(t, hcm.HttpFilters, 3)
++			require.Equal(t, "envoy.filters.http.ext_authz", hcm.HttpFilters[0].Name)
++			require.Equal(t, poolFilterName, hcm.HttpFilters[1].Name)
++			require.Equal(t, "envoy.filters.http.router", hcm.HttpFilters[2].Name)
++
++			epp := &extprocv3.ExternalProcessor{}
++			require.NoError(t, hcm.HttpFilters[1].GetTypedConfig().UnmarshalTo(epp))
++			require.False(t, epp.FailureModeAllow)
++			require.False(t, epp.AllowModeOverride)
++			require.Equal(t, extprocv3.ProcessingMode_FULL_DUPLEX_STREAMED, epp.ProcessingMode.RequestBodyMode)
++			require.Equal(t, extprocv3.ProcessingMode_FULL_DUPLEX_STREAMED, epp.ProcessingMode.ResponseBodyMode)
++			for i, route := range poolRoutes {
++				require.True(t, proto.Equal(originalPoolRoutes[i], route), "pool route %s was changed", route.Name)
++			}
++			disabled := &extprocv3.ExtProcPerRoute{}
++			require.NotNil(t, normalRoute.TypedPerFilterConfig[poolFilterName])
++			require.NoError(t, normalRoute.TypedPerFilterConfig[poolFilterName].UnmarshalTo(disabled))
++			require.True(t, disabled.GetDisabled(), "non-pool route must keep EPP disabled")
++		}
++	})
++
+ 	t.Run("multiple listeners with different route configs", func(_ *testing.T) {
+ 		listeners := []*listenerv3.Listener{
+ 			createListener("listener1", "route-config1"),
+--- a/internal/extensionserver/inferencepool.go
++++ b/internal/extensionserver/inferencepool.go
+@@ -133,12 +133,18 @@
+ // encoded as a string in the format: "namespace/name/serviceName/port".
+ func buildEPPMetadataForCluster(cluster *clusterv3.Cluster, inferencePool *gwaiev1.InferencePool) {
+ 	// Initialize cluster metadata structure if not present.
++	if cluster.Metadata == nil {
++		cluster.Metadata = &corev3.Metadata{}
++	}
+ 	buildEPPMetadata(cluster.Metadata, inferencePool)
+ }
+ 
+ // buildMetadataForInferencePool adds InferencePool metadata to the route for reference by other components.
+ func buildEPPMetadataForRoute(route *routev3.Route, inferencePool *gwaiev1.InferencePool) {
+ 	// Initialize route metadata structure if not present.
++	if route.Metadata == nil {
++		route.Metadata = &corev3.Metadata{}
++	}
+ 	buildEPPMetadata(route.Metadata, inferencePool)
+ }
+ 
+@@ -185,13 +191,22 @@
+ // for each InferencePool's endpoint picker service.
+ func buildClustersForInferencePoolEndpointPickers(clusters []*clusterv3.Cluster) ([]*clusterv3.Cluster, error) {
+ 	result := make([]*clusterv3.Cluster, 0, len(clusters))
++	seen := make(map[string]bool)
++	for _, cluster := range clusters {
++		seen[cluster.Name] = true
++	}
+ 	for _, cluster := range clusters {
+ 		if pool := getInferencePoolByMetadata(cluster.Metadata); pool != nil {
++			name := clusterNameForInferencePool(pool)
++			if seen[name] {
++				continue
++			}
+ 			c, err := buildExtProcClusterForInferencePoolEndpointPicker(pool)
+ 			if err != nil {
+ 				return nil, err
+ 			}
+ 			result = append(result, c)
++			seen[name] = true
+ 		}
+ 	}
+ 	return result, nil
+@@ -308,8 +323,11 @@
+ 			ResponseTrailerMode: extprocv3.ProcessingMode_SEND,
+ 		},
+ 		AllowModeOverride: allowModeOverride,
+-		MessageTimeout:    durationpb.New(300 * time.Second),
+-		FailureModeAllow:  false,
++		MessageTimeout:    durationpb.New(900 * time.Second),
++		// The selected weighted backend and its authorization decision must
++		// remain stable after the endpoint picker mutates endpoint headers.
++		RouteCacheAction: extprocv3.ExternalProcessor_RETAIN,
++		FailureModeAllow: false,
+ 	}
+ }
+ 
+--- a/internal/extensionserver/post_route_modify.go
++++ b/internal/extensionserver/post_route_modify.go
+@@ -7,7 +7,6 @@
+ 
+ import (
+ 	"context"
+-	"fmt"
+ 
+ 	egextension "github.com/envoyproxy/gateway/proto/extension"
+ 	routev3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
+@@ -34,9 +33,6 @@
+ 	// InferencePool configuration only applies to forwarding routes (RouteAction).
+ 	// Non-forwarding routes (e.g. DirectResponse, Redirect) cannot route to an InferencePool.
+ 	if inferencePools != nil {
+-		if len(inferencePools) != 1 {
+-			return nil, fmt.Errorf("BUG: at most one inferencepool can be referenced per route rule but found %d", len(inferencePools))
+-		}
+ 		if routeAction := req.Route.GetRoute(); routeAction != nil {
+ 			// Disable auto host rewrite to prevent Envoy from overriding the host header
+ 			// set by the endpoint picker. The endpoint picker sets the destination via
+@@ -48,7 +44,12 @@
+ 			if req.Route.TypedPerFilterConfig == nil {
+ 				req.Route.TypedPerFilterConfig = make(map[string]*anypb.Any)
+ 			}
+-			buildEPPMetadataForRoute(req.Route, inferencePools[0])
++			// Weighted backend names are mapped to pool metadata in PostTranslate,
++			// where the translated clusters are available. Do not select a pool
++			// based on extension-resource iteration order.
++			if len(inferencePools) == 1 {
++				buildEPPMetadataForRoute(req.Route, inferencePools[0])
++			}
+ 		}
+ 	}
+ 
+--- a/internal/extensionserver/post_translate_modify.go
++++ b/internal/extensionserver/post_translate_modify.go
+@@ -9,6 +9,7 @@
+ 	"context"
+ 	"errors"
+ 	"fmt"
++	"sort"
+ 	"strconv"
+ 	"strings"
+ 	"time"
+@@ -72,8 +73,14 @@
+ 	req.Clusters = append(req.Clusters, cs...)
+ 
+ 	// Modify listeners and routes to support InferencePool backends.
++	if err = prepareWeightedInferencePoolRoutes(req.Clusters, req.Routes); err != nil {
++		return nil, fmt.Errorf("failed to configure weighted inference pools: %w", err)
++	}
+ 	if err = s.maybeModifyListenerAndRoutes(req.Listeners, req.Routes); err != nil {
+ 		return nil, fmt.Errorf("failed to modify listeners and routes for InferencePool support: %w", err)
++	}
++	if err = patchInferenceObjectiveListeners(req.Listeners, req.Routes); err != nil {
++		return nil, fmt.Errorf("failed to install inference objective mutation: %w", err)
+ 	}
+ 
+ 	// Ensure the AI Gateway external processor UDS cluster exists.
+@@ -414,16 +421,16 @@
+ 
+ 	// inferencePoolRoutes builds a matrix of route configs and the inference pools they use.
+ 	routeNameToRoute := make(map[string]*routev3.RouteConfiguration)
+-	routeNameToVHRouteNameToInferencePool := make(map[string]map[string]*gwaiev1.InferencePool)
++	routeNameToVHRouteNameToInferencePool := make(map[string]map[string][]*gwaiev1.InferencePool)
+ 	for _, routeCfg := range routes {
+ 		routeNameToRoute[routeCfg.Name] = routeCfg
+ 		for _, vh := range routeCfg.VirtualHosts {
+ 			for _, route := range vh.Routes {
+-				if pool := getInferencePoolByMetadata(route.Metadata); pool != nil {
++				if pools := inferencePoolsForRoute(route); len(pools) > 0 {
+ 					if routeNameToVHRouteNameToInferencePool[routeCfg.Name] == nil {
+-						routeNameToVHRouteNameToInferencePool[routeCfg.Name] = make(map[string]*gwaiev1.InferencePool)
++						routeNameToVHRouteNameToInferencePool[routeCfg.Name] = make(map[string][]*gwaiev1.InferencePool)
+ 					}
+-					routeNameToVHRouteNameToInferencePool[routeCfg.Name][route.Name] = pool
++					routeNameToVHRouteNameToInferencePool[routeCfg.Name][route.Name] = pools
+ 				}
+ 			}
+ 		}
+@@ -439,17 +446,20 @@
+ 			if routeNameToVHRouteNameToInferencePool[name] == nil {
+ 				continue
+ 			}
+-			for _, pool := range routeNameToVHRouteNameToInferencePool[name] {
++			for _, pools := range routeNameToVHRouteNameToInferencePool[name] {
+ 				if listenerToInferencePools[listener] == nil {
+ 					listenerToInferencePools[listener] = make([]*gwaiev1.InferencePool, 0)
+ 				}
+-				listenerToInferencePools[listener] = append(listenerToInferencePools[listener], pool)
++				listenerToInferencePools[listener] = append(listenerToInferencePools[listener], pools...)
+ 			}
+ 		}
+ 	}
+ 
+ 	// patch the listeners, the route configs and the virtual hosts with inference pool filters.
+ 	for listener, pools := range listenerToInferencePools {
++		sort.Slice(pools, func(i, j int) bool {
++			return httpFilterNameForInferencePool(pools[i]) < httpFilterNameForInferencePool(pools[j])
++		})
+ 		s.log.Info("patching listener with inference pool filters", "listener", listener)
+ 		s.patchListenerWithInferencePoolFilters(listenerNameToListener[listener], pools)
+ 		routeCfgNames := listenerNameToRouteNames[listener]
+@@ -507,7 +517,12 @@
+ 			continue
+ 		}
+ 		var poolFilters []*httpconnectionmanagerv3.HttpFilter
++		queuedPoolFilters := make(map[string]struct{}, len(inferencePools))
+ 		for _, pool := range inferencePools {
++			filterName := httpFilterNameForInferencePool(pool)
++			if _, queued := queuedPoolFilters[filterName]; queued {
++				continue
++			}
+ 			_, baIndex, searchErr := searchInferencePoolInFilterChain(pool, httpConManager.HttpFilters)
+ 			if searchErr != nil {
+ 				s.log.Error(searchErr, "failed to find an inference pool ext proc filter")
+@@ -522,6 +537,10 @@
+ 					continue
+ 				}
+ 				poolFilters = append(poolFilters, eppExtProc)
++				// Several route rules may reference the same pool. These filters
++				// are appended to the HCM after the loop, so the existing-filter
++				// search above cannot see a copy already queued in this pass.
++				queuedPoolFilters[filterName] = struct{}{}
+ 			}
+ 		}
+ 		if len(poolFilters) != 0 {
+--- a/internal/extensionserver/weighted_inferencepool.go
++++ b/internal/extensionserver/weighted_inferencepool.go
+@@ -0,0 +1,219 @@
++// Copyright Envoy AI Gateway Authors
++// SPDX-License-Identifier: Apache-2.0
++
++package extensionserver
++
++import (
++	"fmt"
++	"strings"
++
++	clusterv3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
++	mutationrulesv3 "github.com/envoyproxy/go-control-plane/envoy/config/common/mutation_rules/v3"
++	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
++	listenerv3 "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
++	routev3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
++	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
++	headermutationv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/header_mutation/v3"
++	hcmv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
++	"google.golang.org/protobuf/types/known/anypb"
++	"google.golang.org/protobuf/types/known/structpb"
++	"google.golang.org/protobuf/types/known/wrapperspb"
++	gwaiev1 "sigs.k8s.io/gateway-api-inference-extension/api/v1"
++
++	"github.com/envoyproxy/ai-gateway/internal/internalapi"
++)
++
++const (
++	weightedInferencePoolsKey = "weighted_inference_pools"
++	inferenceObjectiveFilter  = "envoy.filters.http.header_mutation/inference-objective"
++	inferenceObjectiveHeader  = "x-llm-d-inference-objective"
++)
++
++// prepareWeightedInferencePoolRoutes runs after cluster translation. A cluster's
++// own extension metadata is the authoritative pool identity; extension resource
++// order and Envoy's cluster naming conventions are deliberately irrelevant.
++func prepareWeightedInferencePoolRoutes(clusters []*clusterv3.Cluster, configs []*routev3.RouteConfiguration) error {
++	poolsByCluster := make(map[string]*gwaiev1.InferencePool)
++	for _, cluster := range clusters {
++		if pool := getInferencePoolByMetadata(cluster.Metadata); pool != nil {
++			poolsByCluster[cluster.Name] = pool
++		}
++	}
++	for _, config := range configs {
++		for _, host := range config.VirtualHosts {
++			for _, route := range host.Routes {
++				action := route.GetRoute()
++				if action == nil || action.GetWeightedClusters() == nil {
++					continue
++				}
++				var poolValues []*structpb.Value
++				for _, backend := range action.GetWeightedClusters().Clusters {
++					pool := poolsByCluster[backend.Name]
++					if pool == nil {
++						continue
++					}
++					if backend.TypedPerFilterConfig == nil {
++						backend.TypedPerFilterConfig = make(map[string]*anypb.Any)
++					}
++					// The enclosing route disables every EPP; the chosen weighted
++					// cluster overrides only its own EPP. Envoy chooses the cluster
++					// while resolving the route, before decoder filter execution.
++					enable, err := toAny(&extprocv3.ExtProcPerRoute{
++						Override: &extprocv3.ExtProcPerRoute_Overrides{Overrides: &extprocv3.ExtProcOverrides{}},
++					})
++					if err != nil {
++						return err
++					}
++					backend.TypedPerFilterConfig[httpFilterNameForInferencePool(pool)] = enable
++					if err := configureInferenceObjective(backend); err != nil {
++						return fmt.Errorf("route %s backend %s: %w", route.Name, backend.Name, err)
++					}
++					meta := &corev3.Metadata{}
++					buildEPPMetadata(meta, pool)
++					poolValues = append(poolValues, meta.FilterMetadata[internalapi.InternalEndpointMetadataNamespace].Fields[internalMetadataInferencePoolKey])
++				}
++				if len(poolValues) == 0 {
++					continue
++				}
++				action.HostRewriteSpecifier = &routev3.RouteAction_AutoHostRewrite{AutoHostRewrite: wrapperspb.Bool(false)}
++				if route.Metadata == nil {
++					route.Metadata = &corev3.Metadata{}
++				}
++				if route.Metadata.FilterMetadata == nil {
++					route.Metadata.FilterMetadata = make(map[string]*structpb.Struct)
++				}
++				meta := route.Metadata.FilterMetadata[internalapi.InternalEndpointMetadataNamespace]
++				if meta == nil {
++					meta = &structpb.Struct{Fields: make(map[string]*structpb.Value)}
++					route.Metadata.FilterMetadata[internalapi.InternalEndpointMetadataNamespace] = meta
++				}
++				if meta.Fields == nil {
++					meta.Fields = make(map[string]*structpb.Value)
++				}
++				// Do not leave the single-pool default enabled for weighted routes.
++				delete(meta.Fields, internalMetadataInferencePoolKey)
++				meta.Fields[weightedInferencePoolsKey] = structpb.NewListValue(&structpb.ListValue{Values: poolValues})
++			}
++		}
++	}
++	return nil
++}
++
++func inferencePoolsForRoute(route *routev3.Route) []*gwaiev1.InferencePool {
++	if route.Metadata != nil {
++		meta := route.Metadata.FilterMetadata[internalapi.InternalEndpointMetadataNamespace]
++		if meta != nil {
++			if values := meta.Fields[weightedInferencePoolsKey].GetListValue(); values != nil {
++				var pools []*gwaiev1.InferencePool
++				for _, value := range values.Values {
++					poolMeta := &corev3.Metadata{FilterMetadata: map[string]*structpb.Struct{
++						internalapi.InternalEndpointMetadataNamespace: {Fields: map[string]*structpb.Value{internalMetadataInferencePoolKey: value}},
++					}}
++					if pool := getInferencePoolByMetadata(poolMeta); pool != nil {
++						pools = append(pools, pool)
++					}
++				}
++				return pools
++			}
++		}
++	}
++	if pool := getInferencePoolByMetadata(route.Metadata); pool != nil {
++		return []*gwaiev1.InferencePool{pool}
++	}
++	return nil
++}
++
++// Envoy normally applies backend request_headers_to_add in the router filter,
++// after EPP. Copy only the literal objective overwrite into a decoder mutation
++// filter. Retaining the router mutation preserves the upstream header contract
++// and is idempotent because append/add semantics are rejected.
++func configureInferenceObjective(backend *routev3.WeightedCluster_ClusterWeight) error {
++	var objective *corev3.HeaderValueOption
++	for _, header := range backend.RequestHeadersToAdd {
++		if !strings.EqualFold(header.GetHeader().GetKey(), inferenceObjectiveHeader) {
++			continue
++		}
++		if objective != nil || header.AppendAction != corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD ||
++			header.GetAppend().GetValue() || header.GetHeader().GetValue() == "" || strings.Contains(header.GetHeader().GetValue(), "%") {
++			return fmt.Errorf("inference objective must be one literal overwrite")
++		}
++		objective = header
++	}
++	if objective == nil {
++		return nil // Generic InferencePools need not use llm-d objectives.
++	}
++	config, err := toAny(&headermutationv3.HeaderMutationPerRoute{
++		Mutations: &headermutationv3.Mutations{RequestMutations: []*mutationrulesv3.HeaderMutation{{
++			Action: &mutationrulesv3.HeaderMutation_Append{Append: objective},
++		}}},
++	})
++	if err != nil {
++		return err
++	}
++	backend.TypedPerFilterConfig[inferenceObjectiveFilter] = config
++	return nil
++}
++
++func patchInferenceObjectiveListeners(listeners []*listenerv3.Listener, configs []*routev3.RouteConfiguration) error {
++	needsFilter := make(map[string]bool)
++	for _, config := range configs {
++		for _, host := range config.VirtualHosts {
++			for _, route := range host.Routes {
++				if route.GetRoute().GetWeightedClusters() == nil {
++					continue
++				}
++				for _, backend := range route.GetRoute().GetWeightedClusters().Clusters {
++					needsFilter[config.Name] = needsFilter[config.Name] || backend.TypedPerFilterConfig[inferenceObjectiveFilter] != nil
++				}
++			}
++		}
++	}
++	for _, listener := range listeners {
++		needed := false
++		for _, config := range findListenerRouteConfigs(listener) {
++			needed = needed || needsFilter[config]
++		}
++		if !needed {
++			continue
++		}
++		chains := append([]*listenerv3.FilterChain{}, listener.FilterChains...)
++		if listener.DefaultFilterChain != nil {
++			chains = append(chains, listener.DefaultFilterChain)
++		}
++		for _, chain := range chains {
++			hcm, index, err := findHCM(chain)
++			if err != nil {
++				return err
++			}
++			if err = insertInferenceObjectiveMutation(hcm); err != nil {
++				return err
++			}
++			config, err := toAny(hcm)
++			if err != nil {
++				return err
++			}
++			chain.Filters[index].ConfigType = &listenerv3.Filter_TypedConfig{TypedConfig: config}
++		}
++	}
++	return nil
++}
++
++func insertInferenceObjectiveMutation(hcm *hcmv3.HttpConnectionManager) error {
++	for _, filter := range hcm.HttpFilters {
++		if filter.Name == inferenceObjectiveFilter {
++			return nil
++		}
++	}
++	config, err := toAny(&headermutationv3.HeaderMutation{})
++	if err != nil {
++		return err
++	}
++	for index, filter := range hcm.HttpFilters {
++		if strings.HasPrefix(filter.Name, "envoy.filters.http.ext_proc/endpointpicker/") {
++			mutation := &hcmv3.HttpFilter{Name: inferenceObjectiveFilter, ConfigType: &hcmv3.HttpFilter_TypedConfig{TypedConfig: config}}
++			hcm.HttpFilters = append(hcm.HttpFilters[:index], append([]*hcmv3.HttpFilter{mutation}, hcm.HttpFilters[index:]...)...)
++			return nil
++		}
++	}
++	return fmt.Errorf("inference objective filter requires an endpoint-picker filter")
++}
+--- a/internal/extensionserver/weighted_inferencepool_test.go
++++ b/internal/extensionserver/weighted_inferencepool_test.go
+@@ -0,0 +1,180 @@
++// Copyright Envoy AI Gateway Authors
++// SPDX-License-Identifier: Apache-2.0
++
++package extensionserver
++
++import (
++	"context"
++	"testing"
++	"time"
++
++	egextension "github.com/envoyproxy/gateway/proto/extension"
++	clusterv3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
++	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
++	listenerv3 "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
++	routev3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
++	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
++	headermutationv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/header_mutation/v3"
++	hcmv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
++	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
++	"github.com/go-logr/logr"
++	"github.com/stretchr/testify/require"
++	"google.golang.org/protobuf/proto"
++	"google.golang.org/protobuf/types/known/anypb"
++	"google.golang.org/protobuf/types/known/wrapperspb"
++	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
++	gwaiev1 "sigs.k8s.io/gateway-api-inference-extension/api/v1"
++)
++
++func TestWeightedInferencePoolsPreserveCanaryAndAuthContract(t *testing.T) {
++	createInferencePool := func(name, namespace string) *gwaiev1.InferencePool {
++		return &gwaiev1.InferencePool{
++			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
++			Spec: gwaiev1.InferencePoolSpec{
++				TargetPorts:       []gwaiev1.Port{{Number: 8000}},
++				EndpointPickerRef: gwaiev1.EndpointPickerRef{Name: gwaiev1.ObjectName(name + "-epp")},
++			},
++		}
++	}
++	createListener := func(name, routeConfigName string) *listenerv3.Listener {
++		config := &hcmv3.HttpConnectionManager{
++			RouteSpecifier: &hcmv3.HttpConnectionManager_Rds{Rds: &hcmv3.Rds{RouteConfigName: routeConfigName}},
++			HttpFilters:    []*hcmv3.HttpFilter{{Name: "envoy.filters.http.router"}},
++		}
++		return &listenerv3.Listener{Name: name, DefaultFilterChain: &listenerv3.FilterChain{
++			Filters: []*listenerv3.Filter{{Name: "envoy.filters.network.http_connection_manager", ConfigType: &listenerv3.Filter_TypedConfig{TypedConfig: mustToAny(t, config)}}},
++		}}
++	}
++	s, err := New(newFakeClient(), logr.Discard(), udsPath, false, nil, nil, "ratelimit", 5, false)
++	require.NoError(t, err)
++	pools := []*gwaiev1.InferencePool{createInferencePool("stable", "tenant"), createInferencePool("candidate", "tenant")}
++	clusters := []*clusterv3.Cluster{{Name: "arbitrary-cluster-A"}, {Name: "arbitrary-cluster-B"}}
++	for i, pool := range pools {
++		s.handleInferencePoolCluster(clusters[i], pool)
++		require.NotNil(t, getInferencePoolByMetadata(clusters[i].Metadata), "nil input metadata must persist")
++	}
++	duplicatedClusters := append(append([]*clusterv3.Cluster{}, clusters...), clusters...)
++	eppClusters, err := buildClustersForInferencePoolEndpointPickers(duplicatedClusters)
++	require.NoError(t, err)
++	require.Len(t, eppClusters, 2, "priority rules share one upstream EPP cluster per pool")
++	again, err := buildClustersForInferencePoolEndpointPickers(append(duplicatedClusters, eppClusters...))
++	require.NoError(t, err)
++	require.Empty(t, again, "translation does not add existing EPP clusters")
++	var priorityRoutes []*routev3.Route
++	for _, priority := range []string{"interactive", "standard", "batch", "default"} {
++		backends := []*routev3.WeightedCluster_ClusterWeight{}
++		for i, cluster := range clusters {
++			weight := uint32(95)
++			if i == 1 {
++				weight = 5
++			}
++			backends = append(backends, &routev3.WeightedCluster_ClusterWeight{
++				Name: cluster.Name, Weight: wrapperspb.UInt32(weight),
++				RequestHeadersToAdd: []*corev3.HeaderValueOption{{
++					Header:       &corev3.HeaderValue{Key: inferenceObjectiveHeader, Value: pools[i].Name + "-" + priority},
++					AppendAction: corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
++				}},
++			})
++		}
++		priorityRoutes = append(priorityRoutes, &routev3.Route{
++			Name:  priority,
++			Match: &routev3.RouteMatch{PathSpecifier: &routev3.RouteMatch_Path{Path: "/v1/deployments/demo/chat/completions"}},
++			Action: &routev3.Route_Route{Route: &routev3.RouteAction{
++				ClusterSpecifier: &routev3.RouteAction_WeightedClusters{WeightedClusters: &routev3.WeightedCluster{Clusters: backends}},
++				PrefixRewrite:    "/v1/chat/completions",
++				RequestMirrorPolicies: []*routev3.RouteAction_RequestMirrorPolicy{{
++					Cluster:         "candidate-runtime-service",
++					RuntimeFraction: &corev3.RuntimeFractionalPercent{DefaultValue: &typev3.FractionalPercent{Numerator: 7, Denominator: typev3.FractionalPercent_HUNDRED}},
++				}},
++			}},
++		})
++	}
++	unrelated := &routev3.Route{Name: "unrelated"}
++	routes := []*routev3.RouteConfiguration{{Name: "routes", VirtualHosts: []*routev3.VirtualHost{{Name: "host", Routes: append(priorityRoutes, unrelated)}}}}
++	listener := createListener("listener", "routes")
++	hcm := &hcmv3.HttpConnectionManager{}
++	require.NoError(t, listener.DefaultFilterChain.Filters[0].GetTypedConfig().UnmarshalTo(hcm))
++	hcm.HttpFilters = append([]*hcmv3.HttpFilter{{Name: "envoy.filters.http.ext_authz"}}, hcm.HttpFilters...)
++	listener.DefaultFilterChain.Filters[0].ConfigType = &listenerv3.Filter_TypedConfig{TypedConfig: mustToAny(t, hcm)}
++	for range 2 {
++		require.NoError(t, prepareWeightedInferencePoolRoutes(clusters, routes))
++		require.NoError(t, s.maybeModifyListenerAndRoutes([]*listenerv3.Listener{listener}, routes))
++		require.NoError(t, patchInferenceObjectiveListeners([]*listenerv3.Listener{listener}, routes))
++		hcm.Reset()
++		require.NoError(t, listener.DefaultFilterChain.Filters[0].GetTypedConfig().UnmarshalTo(hcm))
++		require.Len(t, hcm.HttpFilters, 5, "one auth, one mutation, two distinct EPPs, one router")
++		require.Equal(t, "envoy.filters.http.ext_authz", hcm.HttpFilters[0].Name)
++		require.Equal(t, inferenceObjectiveFilter, hcm.HttpFilters[1].Name)
++		require.Equal(t, "envoy.filters.http.router", hcm.HttpFilters[4].Name)
++		for _, filter := range hcm.HttpFilters[2:4] {
++			epp := &extprocv3.ExternalProcessor{}
++			require.NoError(t, filter.GetTypedConfig().UnmarshalTo(epp))
++			require.False(t, epp.FailureModeAllow)
++			require.False(t, epp.AllowModeOverride)
++			require.Equal(t, extprocv3.ProcessingMode_FULL_DUPLEX_STREAMED, epp.ProcessingMode.RequestBodyMode)
++			require.Equal(t, extprocv3.ProcessingMode_FULL_DUPLEX_STREAMED, epp.ProcessingMode.ResponseBodyMode)
++			require.Equal(t, 900*time.Second, epp.MessageTimeout.AsDuration())
++			require.Equal(t, extprocv3.ExternalProcessor_RETAIN, epp.RouteCacheAction)
++		}
++		for _, route := range priorityRoutes {
++			require.Equal(t, "/v1/chat/completions", route.GetRoute().PrefixRewrite)
++			require.Equal(t, uint32(7), route.GetRoute().RequestMirrorPolicies[0].RuntimeFraction.DefaultValue.Numerator)
++			require.Equal(t, "candidate-runtime-service", route.GetRoute().RequestMirrorPolicies[0].Cluster)
++			for selected, backend := range route.GetRoute().GetWeightedClusters().Clusters {
++				require.Equal(t, clusters[selected].Name, backend.Name)
++				for other, pool := range pools {
++					filter := httpFilterNameForInferencePool(pool)
++					config := route.TypedPerFilterConfig[filter]
++					if override := backend.TypedPerFilterConfig[filter]; override != nil {
++						config = override
++					}
++					effective := &extprocv3.ExtProcPerRoute{}
++					require.NoError(t, config.UnmarshalTo(effective))
++					require.Equal(t, selected != other, effective.GetDisabled(), "only selected pool admits request")
++				}
++				mutation := &headermutationv3.HeaderMutationPerRoute{}
++				require.NoError(t, backend.TypedPerFilterConfig[inferenceObjectiveFilter].UnmarshalTo(mutation))
++				require.Equal(t, pools[selected].Name+"-"+route.Name, mutation.Mutations.RequestMutations[0].GetAppend().Header.Value)
++				require.Equal(t, corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD, mutation.Mutations.RequestMutations[0].GetAppend().AppendAction)
++			}
++			require.Equal(t, uint32(95), route.GetRoute().GetWeightedClusters().Clusters[0].Weight.Value)
++			require.Equal(t, uint32(5), route.GetRoute().GetWeightedClusters().Clusters[1].Weight.Value)
++		}
++		for _, pool := range pools {
++			config := &extprocv3.ExtProcPerRoute{}
++			require.NoError(t, unrelated.TypedPerFilterConfig[httpFilterNameForInferencePool(pool)].UnmarshalTo(config))
++			require.True(t, config.GetDisabled())
++		}
++	}
++}
++
++func TestPostRouteAllowsMultipleInferencePoolResources(t *testing.T) {
++	s, err := New(newFakeClient(), logr.Discard(), udsPath, false, nil, nil, "ratelimit", 5, false)
++	require.NoError(t, err)
++	route := &routev3.Route{Action: &routev3.Route_Route{Route: &routev3.RouteAction{}}}
++	response, err := s.PostRouteModify(context.Background(), &egextension.PostRouteModifyRequest{
++		Route: route, PostRouteContext: &egextension.PostRouteExtensionContext{
++			ExtensionResources: []*egextension.ExtensionResource{
++				createInferencePoolExtensionResource("stable", "tenant"),
++				createInferencePoolExtensionResource("candidate", "tenant"),
++			},
++		},
++	})
++	require.NoError(t, err)
++	require.NotNil(t, response.Route)
++	require.Nil(t, getInferencePoolByMetadata(response.Route.Metadata), "must not choose first pool")
++}
++
++func TestInferenceObjectiveRejectsAppendAndDynamicValues(t *testing.T) {
++	for _, header := range []*corev3.HeaderValueOption{
++		{Header: &corev3.HeaderValue{Key: inferenceObjectiveHeader, Value: "candidate"}},
++		{Header: &corev3.HeaderValue{Key: inferenceObjectiveHeader, Value: "%REQ(spoof)%"}, AppendAction: corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD},
++	} {
++		backend := &routev3.WeightedCluster_ClusterWeight{TypedPerFilterConfig: make(map[string]*anypb.Any), RequestHeadersToAdd: []*corev3.HeaderValueOption{header}}
++		require.Error(t, configureInferenceObjective(backend))
++	}
++	backend := &routev3.WeightedCluster_ClusterWeight{RequestHeadersToAdd: []*corev3.HeaderValueOption{{Header: &corev3.HeaderValue{Key: "unrelated", Value: "preserve"}}}}
++	original := proto.Clone(backend)
++	require.NoError(t, configureInferenceObjective(backend))
++	require.True(t, proto.Equal(original, backend))
++}

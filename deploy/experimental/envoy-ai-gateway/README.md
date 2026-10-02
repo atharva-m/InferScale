@@ -1,5 +1,10 @@
 # Experimental Envoy AI Gateway adapter patch
 
+The new [weighted-canary qualification candidate](WEIGHTED-CANARY.md) adds
+reproducible Envoy Gateway and AI Gateway corrections for healthy multi-revision
+routing. The record below describes the earlier single-pool image and its
+historical validation; its image and provenance are retained intact.
+
 This directory preserves the dependency correction used in the successful
 2026-09-13 local Kubernetes GPU smoke test. It is not installed by the production
 Kustomize bases or dependency installer, and it does not change versions.lock.yaml.

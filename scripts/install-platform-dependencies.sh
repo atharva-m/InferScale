@@ -3,6 +3,13 @@ set -euo pipefail
 
 script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_root}/.." && pwd)"
+if [[ "${1:-}" == "--candidate-bundle" && "$#" -ge 2 ]]; then
+  shift
+  exec bash "${script_root}/install-candidate-dependencies.sh" "$@"
+elif (( $# )); then
+  echo "usage: $0 [--candidate-bundle <reviewed-bundle-directory> [--context <kubectl-context>]]" >&2
+  exit 64
+fi
 source "${script_root}/lib/common.sh"
 require_command kubectl
 require_command curl

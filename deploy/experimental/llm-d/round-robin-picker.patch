@@ -1,0 +1,693 @@
+diff --git a/cmd/epp/runner/runner.go b/cmd/epp/runner/runner.go
+--- a/cmd/epp/runner/runner.go
++++ b/cmd/epp/runner/runner.go
+@@ -104,6 +104,7 @@
+ 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/filter/sloheadroomtier"
+ 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/picker/maxscore"
+ 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/picker/random"
++	roundrobinpicker "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/picker/roundrobin"
+ 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/picker/weightedrandom"
+ 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/profilehandler/dataparallel"
+ 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/profilehandler/disagg"
+@@ -503,6 +504,7 @@
+ 	fwkplugin.Register(prefix.PrefixCacheScorerPluginType, prefix.PrefixCachePluginFactory)
+ 	fwkplugin.Register(maxscore.MaxScorePickerType, maxscore.MaxScorePickerFactory)
+ 	fwkplugin.Register(random.RandomPickerType, random.RandomPickerFactory)
++	fwkplugin.Register(roundrobinpicker.RoundRobinPickerType, roundrobinpicker.RoundRobinPickerFactory)
+ 	fwkplugin.Register(weightedrandom.WeightedRandomPickerType, weightedrandom.WeightedRandomPickerFactory)
+ 	fwkplugin.Register(single.SingleProfileHandlerType, single.SingleProfileHandlerFactory)
+ 	fwkplugin.Register(disagg.DisaggHeadersHandlerType, disagg.HeadersHandlerFactory) //nolint:staticcheck // intentional: keep backward compatibility
+diff --git a/pkg/epp/framework/plugins/scheduling/picker/roundrobin/picker.go b/pkg/epp/framework/plugins/scheduling/picker/roundrobin/picker.go
+--- /dev/null
++++ b/pkg/epp/framework/plugins/scheduling/picker/roundrobin/picker.go
+@@ -0,0 +1,123 @@
++/*
++Copyright 2026 The InferScale Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++*/
++
++// Package roundrobin implements cyclic endpoint selection within one picker instance.
++package roundrobin
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"sort"
++	"strconv"
++	"sync"
++
++	fwkplugin "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/plugin"
++	fwksched "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/scheduling"
++	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/picker"
++)
++
++// RoundRobinPickerType is the registered name of the cyclic picker plugin.
++const RoundRobinPickerType = "round-robin-picker"
++
++var _ fwksched.Picker = &RoundRobinPicker{}
++
++// RoundRobinPickerFactory defines the factory function for RoundRobinPicker.
++func RoundRobinPickerFactory(name string, rawParameters *json.Decoder, _ fwkplugin.Handle) (fwkplugin.Plugin, error) {
++	parameters := picker.PickerParameters{MaxNumOfEndpoints: picker.DefaultMaxNumOfEndpoints}
++	if rawParameters != nil {
++		if err := rawParameters.Decode(&parameters); err != nil {
++			return nil, fmt.Errorf("failed to parse the parameters of the '%s' picker - %w", RoundRobinPickerType, err)
++		}
++	}
++	return NewRoundRobinPicker(parameters.MaxNumOfEndpoints).WithName(name), nil
++}
++
++// NewRoundRobinPicker initializes a new RoundRobinPicker.
++func NewRoundRobinPicker(maxNumOfEndpoints int) *RoundRobinPicker {
++	if maxNumOfEndpoints <= 0 {
++		maxNumOfEndpoints = picker.DefaultMaxNumOfEndpoints
++	}
++	return &RoundRobinPicker{
++		typedName:         fwkplugin.TypedName{Type: RoundRobinPickerType, Name: RoundRobinPickerType},
++		maxNumOfEndpoints: maxNumOfEndpoints,
++	}
++}
++
++// RoundRobinPicker maintains a cursor per plugin instance, not across EPP replicas.
++type RoundRobinPicker struct {
++	typedName         fwkplugin.TypedName
++	maxNumOfEndpoints int
++	mu                sync.Mutex
++	lastKey           string
++}
++
++// WithName sets the name before the picker serves requests.
++func (p *RoundRobinPicker) WithName(name string) *RoundRobinPicker {
++	p.typedName.Name = name
++	return p
++}
++
++// TypedName returns the type and name tuple of this plugin instance.
++func (p *RoundRobinPicker) TypedName() fwkplugin.TypedName {
++	return p.typedName
++}
++
++type candidate struct {
++	key      string
++	endpoint *fwksched.ScoredEndpoint
++}
++
++// Pick selects cyclic successors in stable endpoint order, ignoring scores.
++func (p *RoundRobinPicker) Pick(_ context.Context, scoredEndpoints []*fwksched.ScoredEndpoint) *fwksched.ProfileRunResult {
++	candidates := make([]candidate, 0, len(scoredEndpoints))
++	for _, endpoint := range scoredEndpoints {
++		if endpoint == nil || endpoint.Endpoint == nil || endpoint.GetMetadata() == nil {
++			continue
++		}
++		metadata := endpoint.GetMetadata()
++		key := metadata.NamespacedName.Namespace + "\x00" + metadata.NamespacedName.Name + "\x00" +
++			metadata.Address + "\x00" + metadata.Port + "\x00" + strconv.Itoa(metadata.RankIndex)
++		candidates = append(candidates, candidate{key: key, endpoint: endpoint})
++	}
++	// Candidate order belongs to the scheduler; sorting a private slice avoids
++	// changing another profile's input or racing concurrent requests.
++	sort.Slice(candidates, func(i, j int) bool { return candidates[i].key < candidates[j].key })
++	unique := candidates[:0]
++	for _, candidate := range candidates {
++		if len(unique) == 0 || candidate.key != unique[len(unique)-1].key {
++			unique = append(unique, candidate)
++		}
++	}
++	candidates = unique
++	count := min(p.maxNumOfEndpoints, len(candidates))
++	result := &fwksched.ProfileRunResult{TargetEndpoints: make([]fwksched.Endpoint, 0, count)}
++	if count == 0 {
++		return result
++	}
++
++	p.mu.Lock()
++	defer p.mu.Unlock()
++	// A key cursor survives removals and insertions without retaining old pools
++	// or applying an index to a differently ordered candidate set.
++	start := sort.Search(len(candidates), func(i int) bool { return candidates[i].key > p.lastKey })
++	for offset := range count {
++		selected := candidates[(start+offset)%len(candidates)]
++		result.TargetEndpoints = append(result.TargetEndpoints, selected.endpoint)
++		p.lastKey = selected.key
++	}
++	return result
++}
+diff --git a/pkg/epp/framework/plugins/scheduling/picker/roundrobin/picker_test.go b/pkg/epp/framework/plugins/scheduling/picker/roundrobin/picker_test.go
+--- /dev/null
++++ b/pkg/epp/framework/plugins/scheduling/picker/roundrobin/picker_test.go
+@@ -0,0 +1,185 @@
++/*
++Copyright 2026 The InferScale Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++*/
++
++package roundrobin
++
++import (
++	"context"
++	"encoding/json"
++	"reflect"
++	"slices"
++	"strings"
++	"sync"
++	"testing"
++
++	k8stypes "k8s.io/apimachinery/pkg/types"
++
++	fwkdl "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/datalayer"
++	fwksched "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/scheduling"
++)
++
++func endpoint(name string, score float64) *fwksched.ScoredEndpoint {
++	return &fwksched.ScoredEndpoint{
++		Endpoint: fwksched.NewEndpoint(&fwkdl.EndpointMetadata{
++			NamespacedName: k8stypes.NamespacedName{Namespace: "tenant-a", Name: name},
++			Address:        "10.0.0.1", Port: "8000",
++		}, nil, nil),
++		Score: score,
++	}
++}
++
++func names(result *fwksched.ProfileRunResult) []string {
++	output := make([]string, len(result.TargetEndpoints))
++	for i, endpoint := range result.TargetEndpoints {
++		output[i] = endpoint.GetMetadata().NamespacedName.Name
++	}
++	return output
++}
++
++func TestPickCyclesDespiteCandidateReorderingAndScores(t *testing.T) {
++	a, b, c := endpoint("a", 0), endpoint("b", 100), endpoint("c", -5)
++	inputs := [][]*fwksched.ScoredEndpoint{{c, a, b}, {b, c, a}, {a, b, c}}
++	picker := NewRoundRobinPicker(1)
++	for index, expected := range []string{"a", "b", "c", "a", "b", "c"} {
++		input := inputs[index%len(inputs)]
++		original := slices.Clone(input)
++		if got := names(picker.Pick(context.Background(), input)); !reflect.DeepEqual(got, []string{expected}) {
++			t.Fatalf("pick %d = %v, want %s", index, got, expected)
++		}
++		if !slices.Equal(input, original) {
++			t.Fatal("picker mutated scheduler input")
++		}
++	}
++}
++
++func TestPickSurvivesCandidateChurnAndEmptyIntervals(t *testing.T) {
++	a, b, c, d := endpoint("a", 0), endpoint("b", 0), endpoint("c", 0), endpoint("d", 0)
++	picker := NewRoundRobinPicker(1)
++	steps := []struct {
++		input []*fwksched.ScoredEndpoint
++		want  []string
++	}{
++		{nil, []string{}},
++		{[]*fwksched.ScoredEndpoint{c, a}, []string{"a"}},
++		{[]*fwksched.ScoredEndpoint{c, b, a}, []string{"b"}}, // inserted successor
++		{[]*fwksched.ScoredEndpoint{a, c}, []string{"c"}},    // removed cursor endpoint
++		{nil, []string{}},
++		{[]*fwksched.ScoredEndpoint{d}, []string{"d"}},
++		{[]*fwksched.ScoredEndpoint{c, a}, []string{"a"}}, // wrap after replacement
++		{[]*fwksched.ScoredEndpoint{a}, []string{"a"}},
++		{[]*fwksched.ScoredEndpoint{b, a}, []string{"b"}},
++	}
++	for index, step := range steps {
++		if got := names(picker.Pick(context.Background(), step.input)); !reflect.DeepEqual(got, step.want) {
++			t.Fatalf("step %d = %v, want %v", index, got, step.want)
++		}
++	}
++}
++
++func TestPickBatchAdvancesAcrossWrapWithoutDuplicates(t *testing.T) {
++	a, b, c := endpoint("a", 0), endpoint("b", 0), endpoint("c", 0)
++	picker := NewRoundRobinPicker(2)
++	for index, expected := range [][]string{{"a", "b"}, {"c", "a"}, {"b", "c"}} {
++		if got := names(picker.Pick(context.Background(), []*fwksched.ScoredEndpoint{c, a, b, a})); !reflect.DeepEqual(got, expected) {
++			t.Fatalf("pick %d = %v, want %v", index, got, expected)
++		}
++	}
++	if got := names(NewRoundRobinPicker(10).Pick(context.Background(), []*fwksched.ScoredEndpoint{c, a, b})); !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
++		t.Fatalf("oversized batch = %v", got)
++	}
++}
++
++func TestPickDistinguishesNamespaceAddressPortAndRank(t *testing.T) {
++	base := endpoint("pod", 0)
++	inputs := []*fwksched.ScoredEndpoint{base}
++	for _, change := range []func(*fwkdl.EndpointMetadata){
++		func(metadata *fwkdl.EndpointMetadata) { metadata.NamespacedName.Namespace = "tenant-b" },
++		func(metadata *fwkdl.EndpointMetadata) { metadata.Address = "10.0.0.2" },
++		func(metadata *fwkdl.EndpointMetadata) { metadata.Port = "8001" },
++		func(metadata *fwkdl.EndpointMetadata) { metadata.RankIndex = 1 },
++	} {
++		metadata := base.GetMetadata().Clone()
++		change(metadata)
++		inputs = append(inputs, &fwksched.ScoredEndpoint{Endpoint: fwksched.NewEndpoint(metadata, nil, nil)})
++	}
++	picker := NewRoundRobinPicker(1)
++	seen := map[fwksched.Endpoint]bool{}
++	for range len(inputs) {
++		selected := picker.Pick(context.Background(), inputs).TargetEndpoints[0]
++		if seen[selected] {
++			t.Fatal("distinct endpoint identity was skipped")
++		}
++		seen[selected] = true
++	}
++	if got := picker.Pick(context.Background(), inputs).TargetEndpoints[0]; got != base {
++		t.Fatalf("cycle did not wrap to first endpoint: %v", got)
++	}
++}
++
++func TestPickConcurrentCallsAreExactlyBalancedAndDoNotMutateInput(t *testing.T) {
++	input := []*fwksched.ScoredEndpoint{endpoint("c", 0), endpoint("a", 0), endpoint("b", 0)}
++	original := slices.Clone(input)
++	picker := NewRoundRobinPicker(1)
++	const workers, calls = 48, 100
++	results := make(chan string, workers*calls)
++	var group sync.WaitGroup
++	for range workers {
++		group.Add(1)
++		go func() {
++			defer group.Done()
++			for range calls {
++				results <- names(picker.Pick(context.Background(), input))[0]
++			}
++		}()
++	}
++	group.Wait()
++	close(results)
++	counts := map[string]int{}
++	for result := range results {
++		counts[result]++
++	}
++	for _, name := range []string{"a", "b", "c"} {
++		if counts[name] != workers*calls/len(input) {
++			t.Fatalf("counts = %v, want exactly %d per endpoint", counts, workers*calls/len(input))
++		}
++	}
++	if !slices.Equal(input, original) {
++		t.Fatal("concurrent calls mutated scheduler input")
++	}
++}
++
++func TestFactoryDefaultsNamingAndInvalidParameters(t *testing.T) {
++	for _, parameters := range []string{"", "{}", `{"maxNumOfEndpoints":0}`, `{"maxNumOfEndpoints":-1}`} {
++		var decoder *json.Decoder
++		if parameters != "" {
++			decoder = json.NewDecoder(strings.NewReader(parameters))
++		}
++		plugin, err := RoundRobinPickerFactory("custom", decoder, nil)
++		if err != nil {
++			t.Fatal(err)
++		}
++		if plugin.TypedName().Type != RoundRobinPickerType || plugin.TypedName().Name != "custom" {
++			t.Fatalf("plugin identity = %#v", plugin.TypedName())
++		}
++		picker := plugin.(*RoundRobinPicker)
++		if got := picker.Pick(context.Background(), []*fwksched.ScoredEndpoint{nil, {}, endpoint("b", 0), endpoint("a", 0)}); len(got.TargetEndpoints) != 1 {
++			t.Fatalf("default count = %d", len(got.TargetEndpoints))
++		}
++	}
++	if _, err := RoundRobinPickerFactory("invalid", json.NewDecoder(strings.NewReader(`{"maxNumOfEndpoints":"two"}`)), nil); err == nil {
++		t.Fatal("factory accepted invalid parameter type")
++	}
++}
+diff --git a/pkg/epp/framework/plugins/scheduling/picker/roundrobin/README.md b/pkg/epp/framework/plugins/scheduling/picker/roundrobin/README.md
+--- /dev/null
++++ b/pkg/epp/framework/plugins/scheduling/picker/roundrobin/README.md
+@@ -0,0 +1,35 @@
++# Round-robin Picker
++
++**Type:** `round-robin-picker`
++
++Selects the next endpoint in a stable lexical order of namespace, pod name,
++address, serving port, and rank. Scores do not affect selection. A mutex
++serializes cursor advances within a plugin instance. For a stable candidate
++set, every endpoint is selected once per cycle, including concurrent calls.
++Completion order of concurrent requests is not selection order.
++
++When candidates change, selection resumes at the first available endpoint
++after the last selected identity, wrapping to the beginning when needed.
++An empty set returns no endpoints and leaves the cursor unchanged. Duplicate
++identities count once. Candidate slices and endpoint metadata remain unchanged.
++
++`maxNumOfEndpoints` defaults to 1. Larger values select a consecutive batch of
++distinct endpoints, capped at the number of available candidates, and advance
++the cursor through that batch. Nonpositive values use the default, matching
++the other picker factories.
++
++State belongs to one configured picker instance in one EPP process. Process
++restarts reset the cursor, separate EPP replicas have independent cursors, and
++there is no globally coordinated order. Configure a separate plugin instance
++for each scheduling profile that requires an independent cycle.
++
++```yaml
++plugins:
++- type: round-robin-picker
++  parameters:
++    maxNumOfEndpoints: 1
++schedulingProfiles:
++- name: default
++  plugins:
++  - pluginRef: round-robin-picker
++```
+diff --git a/pkg/common/observability/tracing/telemetry.go b/pkg/common/observability/tracing/telemetry.go
+--- a/pkg/common/observability/tracing/telemetry.go
++++ b/pkg/common/observability/tracing/telemetry.go
+@@ -49,12 +49,13 @@
+ 	logger = logger.WithName("trace")
+ 	loggerWrap := &errorHandler{logger: logger}
+ 
+-	_, ok := os.LookupEnv("OTEL_SERVICE_NAME")
+-	if !ok {
+-		os.Setenv("OTEL_SERVICE_NAME", defaultServiceName)
++	serviceName := os.Getenv("OTEL_SERVICE_NAME")
++	if serviceName == "" {
++		serviceName = defaultServiceName
++		os.Setenv("OTEL_SERVICE_NAME", serviceName)
+ 	}
+ 
+-	_, ok = os.LookupEnv("OTEL_EXPORTER_OTLP_ENDPOINT")
++	_, ok := os.LookupEnv("OTEL_EXPORTER_OTLP_ENDPOINT")
+ 	if !ok {
+ 		os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
+ 	}
+@@ -92,13 +93,14 @@
+ 		sdktrace.WithSampler(sampler),
+ 		sdktrace.WithResource(resource.NewWithAttributes(
+ 			semconv.SchemaURL,
++			semconv.ServiceNameKey.String(serviceName),
+ 			semconv.ServiceVersionKey.String(version.BuildRef),
+ 		)),
+ 	}
+ 
+ 	tracerProvider := sdktrace.NewTracerProvider(opt...)
+ 	otel.SetTracerProvider(tracerProvider)
+-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
++	otel.SetTextMapPropagator(propagation.TraceContext{})
+ 	otel.SetErrorHandler(loggerWrap)
+ 
+ 	return tracerProvider.Shutdown, nil
+diff --git a/pkg/common/observability/tracing/telemetry_test.go b/pkg/common/observability/tracing/telemetry_test.go
+--- a/pkg/common/observability/tracing/telemetry_test.go
++++ b/pkg/common/observability/tracing/telemetry_test.go
+@@ -18,15 +18,101 @@
+ 
+ import (
+ 	"context"
++	"os"
+ 	"testing"
+ 
++	"github.com/go-logr/logr"
+ 	"go.opentelemetry.io/otel"
+ 	"go.opentelemetry.io/otel/attribute"
++	"go.opentelemetry.io/otel/baggage"
++	"go.opentelemetry.io/otel/propagation"
+ 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+ 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
++	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
++	"go.opentelemetry.io/otel/trace"
+ 
+ 	"github.com/llm-d/llm-d-router/version"
+ )
++
++func TestInitTracingExportsConfiguredServiceIdentity(t *testing.T) {
++	for _, test := range []struct {
++		name  string
++		value string
++		unset bool
++		want  string
++	}{
++		{name: "configured", value: "inferscale-epp", want: "inferscale-epp"},
++		{name: "unset defaults", unset: true, want: "llm-d-epp"},
++		{name: "empty defaults", want: "llm-d-epp"},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			t.Setenv("OTEL_SERVICE_NAME", test.value)
++			if test.unset {
++				if err := os.Unsetenv("OTEL_SERVICE_NAME"); err != nil {
++					t.Fatal(err)
++				}
++			}
++			t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
++			t.Setenv("OTEL_TRACES_EXPORTER", "console")
++			t.Setenv("OTEL_TRACES_SAMPLER", "parentbased_traceidratio")
++			t.Setenv("OTEL_TRACES_SAMPLER_ARG", "1")
++			originalProvider := otel.GetTracerProvider()
++			originalPropagator := otel.GetTextMapPropagator()
++			originalErrorHandler := otel.GetErrorHandler()
++			t.Cleanup(func() {
++				otel.SetTracerProvider(originalProvider)
++				otel.SetTextMapPropagator(originalPropagator)
++				otel.SetErrorHandler(originalErrorHandler)
++			})
++			shutdown, err := InitTracing(context.Background(), logr.Discard(), "llm-d-epp")
++			if err != nil {
++				t.Fatal(err)
++			}
++			t.Cleanup(func() {
++				if err := shutdown(context.Background()); err != nil {
++					t.Error(err)
++				}
++			})
++			carrier := propagation.MapCarrier{
++				"traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
++				"tracestate":  "vendor=retained",
++				"baggage":     "secret=client-value",
++			}
++			ctx := otel.GetTextMapPropagator().Extract(context.Background(), carrier)
++			parent := trace.SpanContextFromContext(ctx)
++			if parent.TraceID().String() != "0af7651916cd43dd8448eb211c80319c" ||
++				parent.SpanID().String() != "b7ad6b7169203331" || !parent.IsSampled() || !parent.IsRemote() ||
++				parent.TraceState().String() != "vendor=retained" {
++				t.Fatal("W3C caller context was not preserved")
++			}
++			if baggage.FromContext(ctx).Len() != 0 {
++				t.Fatal("client baggage crossed the trace boundary")
++			}
++			forwarded := propagation.MapCarrier{}
++			otel.GetTextMapPropagator().Inject(ctx, forwarded)
++			if len(forwarded) != 2 || forwarded["traceparent"] != carrier["traceparent"] || forwarded["tracestate"] != carrier["tracestate"] {
++				t.Fatal("outbound propagation must contain only the canonical W3C context")
++			}
++			recorder := tracetest.NewSpanRecorder()
++			otel.GetTracerProvider().(*sdktrace.TracerProvider).RegisterSpanProcessor(recorder)
++			_, span := Tracer().Start(context.Background(), "service-identity-test")
++			span.End()
++			ended := recorder.Ended()
++			if len(ended) != 1 {
++				t.Fatalf("recorded %d spans, want one", len(ended))
++			}
++			attributes := ended[0].Resource().Set()
++			name, ok := attributes.Value(semconv.ServiceNameKey)
++			if !ok || name.AsString() != test.want {
++				t.Fatalf("service.name = %v, want %s", name, test.want)
++			}
++			buildVersion, ok := attributes.Value(semconv.ServiceVersionKey)
++			if !ok || buildVersion.AsString() != version.BuildRef {
++				t.Fatalf("service.version = %v, want %s", buildVersion, version.BuildRef)
++			}
++		})
++	}
++}
+ 
+ func TestTracer(t *testing.T) {
+ 	const (
+diff --git a/pkg/epp/handlers/request.go b/pkg/epp/handlers/request.go
+--- a/pkg/epp/handlers/request.go
++++ b/pkg/epp/handlers/request.go
+@@ -25,7 +25,6 @@
+ 
+ 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+ 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+-	"go.opentelemetry.io/otel"
+ 	"go.opentelemetry.io/otel/propagation"
+ 	"google.golang.org/protobuf/types/known/structpb"
+ 
+@@ -83,6 +82,14 @@
+ 		}
+ 		maps.Copy(dynamicMetadata.Fields, reqCtx.Response.DynamicMetadata.Fields)
+ 	}
++	traceHeaders := propagation.MapCarrier{}
++	propagation.TraceContext{}.Inject(ctx, traceHeaders)
++	removeHeaders := []string{"baggage"}
++	for _, key := range []string{"traceparent", "tracestate"} {
++		if traceHeaders[key] == "" {
++			removeHeaders = append(removeHeaders, key)
++		}
++	}
+ 
+ 	return &extProcPb.ProcessingResponse{
+ 		Response: &extProcPb.ProcessingResponse_RequestHeaders{
+@@ -90,7 +97,8 @@
+ 				Response: &extProcPb.CommonResponse{
+ 					ClearRouteCache: true,
+ 					HeaderMutation: &extProcPb.HeaderMutation{
+-						SetHeaders: s.generateHeaders(ctx, reqCtx),
++						SetHeaders:    s.generateHeaders(ctx, reqCtx),
++						RemoveHeaders: removeHeaders,
+ 					},
+ 				},
+ 			},
+@@ -120,16 +128,16 @@
+ 		})
+ 	}
+ 
+-	// Inject trace context headers for propagation to downstream services
++	// Only the canonical W3C context crosses the backend trace boundary.
+ 	traceHeaders := make(map[string]string)
+-	propagator := otel.GetTextMapPropagator()
+-	propagator.Inject(ctx, propagation.MapCarrier(traceHeaders))
++	propagation.TraceContext{}.Inject(ctx, propagation.MapCarrier(traceHeaders))
+ 	for key, value := range traceHeaders {
+ 		headers = append(headers, &configPb.HeaderValueOption{
+ 			Header: &configPb.HeaderValue{
+ 				Key:      key,
+ 				RawValue: []byte(value),
+ 			},
++			AppendAction: configPb.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
+ 		})
+ 	}
+ 
+diff --git a/pkg/epp/handlers/request_test.go b/pkg/epp/handlers/request_test.go
+--- a/pkg/epp/handlers/request_test.go
++++ b/pkg/epp/handlers/request_test.go
+@@ -18,12 +18,14 @@
+ 
+ import (
+ 	"context"
++	"strings"
+ 	"testing"
+ 
+ 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+ 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+ 	"github.com/stretchr/testify/assert"
+ 	"go.opentelemetry.io/otel"
++	"go.opentelemetry.io/otel/baggage"
+ 	"go.opentelemetry.io/otel/propagation"
+ 	"go.opentelemetry.io/otel/trace"
+ 	"google.golang.org/protobuf/types/known/structpb"
+@@ -186,6 +188,77 @@
+ 	assert.NotContains(t, gotHeaders, metadata.OldObjectiveKey)
+ 	assert.Equal(t, "1.2.3.4:8080", gotHeaders[metadata.DestinationEndpointKey])
+ 	assert.Equal(t, "123", gotHeaders["Content-Length"])
++}
++
++func TestGenerateRequestHeaderResponse_CanonicalTraceContext(t *testing.T) {
++	previous := otel.GetTextMapPropagator()
++	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
++	t.Cleanup(func() { otel.SetTextMapPropagator(previous) })
++
++	traceID, err := trace.TraceIDFromHex("0af7651916cd43dd8448eb211c80319c")
++	assert.NoError(t, err)
++	spanID, err := trace.SpanIDFromHex("b7ad6b7169203331")
++	assert.NoError(t, err)
++	state, err := trace.ParseTraceState("vendor=canonical")
++	assert.NoError(t, err)
++	member, err := baggage.NewMember("secret", "client-value")
++	assert.NoError(t, err)
++	bag, err := baggage.New(member)
++	assert.NoError(t, err)
++
++	for _, test := range []struct {
++		name  string
++		valid bool
++		state trace.TraceState
++	}{
++		{name: "sampled caller retains state", valid: true, state: state},
++		{name: "stale state removed", valid: true},
++		{name: "invalid context removed"},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			ctx := baggage.ContextWithBaggage(context.Background(), bag)
++			if test.valid {
++				ctx = trace.ContextWithSpanContext(ctx, trace.NewSpanContext(trace.SpanContextConfig{
++					TraceID: traceID, SpanID: spanID, TraceFlags: trace.FlagsSampled, TraceState: test.state,
++				}))
++			}
++			reqCtx := &RequestContext{
++				TargetEndpoint: "1.2.3.4:8080",
++				Request: &Request{Headers: map[string]string{
++					"traceparent": "old-parent", "TraceParent": "mixed-case-old-parent",
++					"tracestate": "vendor=old", "baggage": "secret=client-value",
++					"Baggage": "secret=mixed-case", "x-user-data": "preserved",
++				}},
++				Response: &Response{},
++			}
++			mutation := (&StreamingServer{}).generateRequestHeaderResponse(ctx, reqCtx).GetRequestHeaders().GetResponse().GetHeaderMutation()
++			values := make(map[string][]string)
++			for _, header := range mutation.SetHeaders {
++				key := strings.ToLower(header.GetHeader().GetKey())
++				values[key] = append(values[key], string(header.GetHeader().GetRawValue()))
++				if key == "traceparent" || key == "tracestate" {
++					assert.Equal(t, configPb.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD, header.AppendAction)
++				}
++			}
++			assert.Equal(t, []string{"preserved"}, values["x-user-data"])
++			assert.NotContains(t, values, "baggage")
++			assert.Contains(t, mutation.RemoveHeaders, "baggage")
++			if test.valid {
++				assert.Equal(t, []string{"00-" + traceID.String() + "-" + spanID.String() + "-01"}, values["traceparent"])
++				assert.NotContains(t, mutation.RemoveHeaders, "traceparent")
++			} else {
++				assert.NotContains(t, values, "traceparent")
++				assert.Contains(t, mutation.RemoveHeaders, "traceparent")
++			}
++			if test.state.Len() > 0 {
++				assert.Equal(t, []string{test.state.String()}, values["tracestate"])
++				assert.NotContains(t, mutation.RemoveHeaders, "tracestate")
++			} else {
++				assert.NotContains(t, values, "tracestate")
++				assert.Contains(t, mutation.RemoveHeaders, "tracestate")
++			}
++		})
++	}
+ }
+ 
+ func TestGenerateRequestHeaderResponse_MergeMetadata(t *testing.T) {
+diff --git a/pkg/epp/util/request/headers.go b/pkg/epp/util/request/headers.go
+--- a/pkg/epp/util/request/headers.go
++++ b/pkg/epp/util/request/headers.go
+@@ -48,7 +48,7 @@
+ 	)
+ 
+ 	// ProtocolHeaders are managed by the proxy layer (Envoy/EPP).
+-	ProtocolHeaders = sets.New("content-length")
++	ProtocolHeaders = sets.New("content-length", "traceparent", "tracestate", "baggage")
+ )
+ 
+ func IsSystemOwnedHeader(key string) bool {
+diff --git a/pkg/epp/util/request/headers_test.go b/pkg/epp/util/request/headers_test.go
+--- a/pkg/epp/util/request/headers_test.go
++++ b/pkg/epp/util/request/headers_test.go
+@@ -44,6 +44,9 @@
+ 		metadata.DestinationEndpointServedKey,
+ 		errcommon.RequestDroppedReasonHeaderKey,
+ 		"Content-Length",
++		"TraceParent",
++		"TraceState",
++		"Baggage",
+ 	}
+ 
+ 	for _, header := range systemHeaders {

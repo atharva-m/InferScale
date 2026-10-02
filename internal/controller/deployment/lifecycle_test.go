@@ -55,6 +55,7 @@ func readyLocalDeployment(t *testing.T) (*Reconciler, *platformv1alpha1.Inferenc
 	r := &Reconciler{Client: c, Scheme: scheme, Registry: registry, Config: Config{
 		Images:      platformruntime.Images{VLLM: "ghcr.io/inferscale/fake-runtime:0.1.0-dev", EndpointPicker: "ghcr.io/llm-d/endpoint-picker@sha256:" + repeatHex("a", 64)},
 		GatewayName: "gateway", GatewayNamespace: "gateway-system", MonitoringNamespace: "monitoring", PrometheusURL: "http://prometheus:9090", ProgressiveRollout: true, ScaleToZero: true,
+		OTLPEndpoint: "http://otel:4317",
 	}, Now: func() time.Time { return time.Unix(1_700_000_000, 0) }}
 	for range 4 {
 		reconcileLocal(t, r, resource)

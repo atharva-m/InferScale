@@ -1,7 +1,9 @@
+import importlib
 import json
 import os
 import shutil
 import stat
+from itertools import islice
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -141,3 +143,16 @@ def test_config_validates_with_installed_guidellm(tmp_path: Path) -> None:
     assert benchmark.profile.streams == [1]
     assert benchmark.backend.target == "https://gateway.example"
     assert benchmark.tokenizer.load_kwargs["revision"] == "a" * 40
+
+    random_utils = importlib.import_module("guidellm.utils.random")
+
+    data = benchmark.data[0]
+    for prefix, count in (("prompt", 8), ("output", 4)):
+        sampler = random_utils.IntegerRangeSampler(
+            average=getattr(data, f"{prefix}_tokens"),
+            variance=getattr(data, f"{prefix}_tokens_stdev"),
+            min_value=getattr(data, f"{prefix}_tokens_min"),
+            max_value=getattr(data, f"{prefix}_tokens_max"),
+            random_seed=7,
+        )
+        assert list(islice(sampler, 100)) == [count] * 100

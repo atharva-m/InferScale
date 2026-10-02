@@ -61,16 +61,19 @@ experiments remain explicit operator runs and are never mislabeled as reusable
 backend-selection evidence.
 
 A scheduled success also requires every allowlisted Prometheus query to return
-fresh finite data. Runtime/DCGM queries are selected by namespace and exact
-runtime-pod prefix, while router queries are selected by namespace and the
-frozen revision EPP service. The selected DCGM inventory must contain exactly
-the scenario GPU count and SKU. The artifact records `measurement_interval`
-with `start_unix_s` and `end_unix_s` from GuideLLM's measured benchmark interval
-(or the native client's request interval). Prometheus queries evaluate at that
-end timestamp: gauges average samples within the interval, and queue latency
-uses histogram increases over the same interval. Startup and result collection
-delays therefore do not enter the measurement. Runs need enough scrapes during
-the interval to produce each required metric. Missing telemetry,
+fresh finite data. This includes normalized KV-cache utilization and
+prefix-cache hit ratio, so a publishable prefix-caching scenario cannot quietly
+turn into a cache-blind measurement. Runtime/DCGM queries are selected by
+namespace and exact runtime-pod prefix, while router queries are selected by
+namespace and the frozen revision EPP service. The selected DCGM inventory must
+contain exactly the scenario GPU count and SKU. The artifact records
+`measurement_interval` with `start_unix_s` and `end_unix_s` from GuideLLM's
+measured benchmark interval (or the native client's request interval).
+Prometheus queries evaluate at that end timestamp: gauges average samples within
+the interval, and queue latency uses histogram increases over the same
+interval. Startup and result collection delays therefore do not enter the
+measurement. Runs need enough scrapes during the interval to produce each
+required metric. Missing telemetry,
 GuideLLM schema drift, a token-length mismatch, or any request failure makes
 the run fail closed. Normalized artifacts never retain generated output,
 prompts, raw request arguments, or GuideLLM request IDs.

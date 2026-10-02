@@ -49,8 +49,8 @@ func run() error {
 	if err := cfg.ValidateAPI(); err != nil {
 		return err
 	}
-	if cfg.DatabaseURL == "" || cfg.ValkeyAddr == "" {
-		return errors.New("INFERSCALE_DATABASE_URL and INFERSCALE_VALKEY_ADDR are required")
+	if cfg.DatabaseURL == "" || (cfg.ValkeyAddr == "" && cfg.ValkeyURL == "") {
+		return errors.New("INFERSCALE_DATABASE_URL and either INFERSCALE_VALKEY_URL or INFERSCALE_VALKEY_ADDR are required")
 	}
 	if cfg.BenchmarkImage == "" || cfg.BenchmarkCallbackSigningKey == "" {
 		return errors.New("INFERSCALE_BENCHMARK_IMAGE and INFERSCALE_BENCHMARK_CALLBACK_SIGNING_KEY are required")
@@ -71,7 +71,7 @@ func run() error {
 		return err
 	}
 	defer store.Close()
-	cache, err := valkey.Open(ctx, valkey.Config{Address: cfg.ValkeyAddr, Prefix: "inferscale"})
+	cache, err := valkey.Open(ctx, valkey.Config{URL: cfg.ValkeyURL, Address: cfg.ValkeyAddr, Prefix: "inferscale"})
 	if err != nil {
 		return err
 	}

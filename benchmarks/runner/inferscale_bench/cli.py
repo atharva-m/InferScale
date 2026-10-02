@@ -234,6 +234,7 @@ def _run(args: argparse.Namespace) -> RunExecution | None:
             scenario.deployment.gpu_count,
             scenario.deployment.gpu_type,
             measured.interval,
+            prefix_cache_enabled=scenario.deployment.prefix_cache,
         )
         provenance["telemetry_evidence"] = telemetry_evidence
         provenance["nvidia_gpus"] = [

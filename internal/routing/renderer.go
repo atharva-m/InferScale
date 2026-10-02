@@ -28,6 +28,9 @@ func (r Renderer) RenderRevision(spec platformruntime.Spec, revision platformrun
 	if runtimeService == "" {
 		return RevisionResources{}, fmt.Errorf("runtime service name is required")
 	}
+	if spec.Tracing && r.Config.OTLPEndpoint == "" {
+		return RevisionResources{}, fmt.Errorf("endpoint picker tracing requires an OTLP endpoint")
+	}
 	switch spec.RoutingPolicy {
 	case "", "round-robin", "load-aware":
 	case "prefix-aware":
@@ -63,7 +66,7 @@ func (r Renderer) RenderRevision(spec platformruntime.Spec, revision platformrun
 		kubeutil.LabelTenant:     kubeutil.ResourceName(spec.Tenant),
 	}
 
-	configData, err := endpointPickerConfig(spec)
+	configData, err := endpointPickerConfig(spec, runtimeService)
 	if err != nil {
 		return RevisionResources{}, err
 	}
@@ -128,7 +131,7 @@ func (r Renderer) RenderRevision(spec platformruntime.Spec, revision platformrun
 	}
 	runtimeMonitor := serviceMonitor(spec.Namespace, kubeutil.ResourceName(revision.Name, "runtime"), workerLabels, runtimeMetricsPort, "/metrics")
 	eppMonitor := serviceMonitor(spec.Namespace, kubeutil.ResourceName(revision.Name, "epp"), eppLabels, "metrics", "/metrics")
-	networkPolicy := runtimeNetworkPolicy(spec.Namespace, revision.Name, workerLabels, r.Config.GatewayNamespace, r.Config.MonitoringNamespace)
+	networkPolicy := runtimeNetworkPolicy(spec.Namespace, revision.Name, workerLabels, r.Config.GatewayNamespace, r.Config.MonitoringNamespace, spec.ResolvedBackend)
 
 	objects := []client.Object{configMap, serviceAccount, role, roleBinding, eppDeployment, eppService, inferencePool}
 	objects = append(objects, objectives...)
@@ -136,14 +139,7 @@ func (r Renderer) RenderRevision(spec platformruntime.Spec, revision platformrun
 	return RevisionResources{Names: names, Objects: objects}, nil
 }
 
-func endpointPickerConfig(spec platformruntime.Spec) (string, error) {
-	scorer := "round-robin-scorer"
-	switch spec.RoutingPolicy {
-	case "load-aware":
-		scorer = "queue-scorer"
-	case "prefix-aware":
-		scorer = "precise-prefix-cache-scorer"
-	}
+func endpointPickerConfig(spec platformruntime.Spec, runtimeService string) (string, error) {
 	maxConcurrency := spec.MaxConcurrentRequests
 	if maxConcurrency < 1 {
 		maxConcurrency = 1
@@ -159,20 +155,74 @@ func endpointPickerConfig(spec platformruntime.Spec) (string, error) {
 		// still propagates through the full-duplex EPP stream.
 		requestTTL = "900s"
 	}
-	config := map[string]any{
-		"apiVersion":   "llm-d.ai/v1alpha1",
-		"kind":         "EndpointPickerConfig",
-		"featureGates": []string{"flowControl"},
-		"plugins": []any{
-			map[string]any{"type": "round-robin-fairness-policy", "name": "tenant-fairness"},
-			map[string]any{"type": "fcfs-ordering-policy", "name": "fcfs"},
-			map[string]any{
-				"type": "concurrency-detector", "name": "saturation",
-				"parameters": map[string]any{"maxConcurrency": maxConcurrency, "concurrencyMode": "requests", "headroom": 0.0},
-			},
-			map[string]any{"type": scorer, "name": "routing-scorer"},
-			map[string]any{"type": "max-score-picker", "name": "picker"},
+	plugins := []any{
+		map[string]any{"type": "round-robin-fairness-policy", "name": "tenant-fairness"},
+		map[string]any{"type": "fcfs-ordering-policy", "name": "fcfs"},
+		map[string]any{
+			"type": "concurrency-detector", "name": "saturation",
+			"parameters": map[string]any{"maxConcurrency": maxConcurrency, "concurrencyMode": "requests", "headroom": 0.0},
 		},
+		map[string]any{"type": "metrics-data-source"},
+	}
+	extractor := map[string]any{"type": "core-metrics-extractor"}
+	if spec.ResolvedBackend == platformruntime.BackendTRTLLM {
+		// The pinned TRT server exports JSON. Its sidecar exposes these
+		// Prometheus gauges on port 9000 for both EPP and Prometheus.
+		extractor["parameters"] = map[string]any{
+			"defaultEngine": "inferscale-trtllm",
+			"engineConfigs": []any{map[string]any{
+				"name":                "inferscale-trtllm",
+				"queuedRequestsSpec":  "inferscale_trtllm_queued_requests",
+				"runningRequestsSpec": "inferscale_trtllm_active_requests",
+				"kvUsageSpec":         "inferscale_trtllm_kv_cache_utilization_ratio",
+			}},
+		}
+	}
+	plugins = append(plugins, extractor)
+	sources := []any{map[string]any{
+		"pluginRef": "metrics-data-source", "extractors": []any{map[string]any{"pluginRef": "core-metrics-extractor"}},
+	}}
+	var profile []any
+	switch spec.RoutingPolicy {
+	case "", "round-robin":
+		// The native picker plugin cycles through the eligible endpoint
+		// identities within this EPP process, independent of load scores.
+		plugins = append(plugins, map[string]any{"type": "round-robin-picker", "name": "picker"})
+	case "load-aware", "prefix-aware":
+		plugins = append(plugins, map[string]any{"type": "queue-scorer", "name": "routing-scorer"})
+		profile = append(profile, map[string]any{"pluginRef": "routing-scorer"})
+		if spec.RoutingPolicy == "prefix-aware" {
+			plugins = append(plugins,
+				map[string]any{"type": "token-producer", "parameters": map[string]any{
+					"modelName": spec.DeploymentName,
+					"vllm":      map[string]any{"url": fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", runtimeService, spec.Namespace, platformruntime.ServingPort)},
+				}},
+				map[string]any{"type": "endpoint-notification-source"},
+				map[string]any{"type": "precise-prefix-cache-producer", "parameters": map[string]any{
+					"tokenProcessorConfig": map[string]any{"blockSize": 64},
+					"kvEventsConfig":       map[string]any{"discoverPods": true, "podDiscoveryConfig": map[string]any{"socketPort": 5557}},
+					"indexerConfig":        map[string]any{"kvBlockIndexConfig": map[string]any{"enableMetrics": true}},
+				}},
+				map[string]any{"type": "prefix-cache-scorer", "parameters": map[string]any{"prefixMatchInfoProducerName": "precise-prefix-cache-producer"}},
+				map[string]any{"type": "kv-cache-utilization-scorer"},
+			)
+			profile = append(profile,
+				map[string]any{"pluginRef": "prefix-cache-scorer", "weight": 2},
+				map[string]any{"pluginRef": "kv-cache-utilization-scorer"},
+			)
+			sources = append(sources, map[string]any{
+				"pluginRef": "endpoint-notification-source", "extractors": []any{map[string]any{"pluginRef": "precise-prefix-cache-producer"}},
+			})
+		}
+		plugins = append(plugins, map[string]any{"type": "max-score-picker", "name": "picker"})
+	}
+	profile = append(profile, map[string]any{"pluginRef": "picker"})
+	config := map[string]any{
+		"apiVersion":         "llm-d.ai/v1alpha1",
+		"kind":               "EndpointPickerConfig",
+		"featureGates":       []string{"flowControl"},
+		"plugins":            plugins,
+		"dataLayer":          map[string]any{"injectDefaults": false, "sources": sources},
 		"saturationDetector": map[string]any{"pluginRef": "saturation"},
 		"flowControl": map[string]any{
 			"maxRequests":       strconv.FormatInt(int64(maxQueued), 10),
@@ -184,10 +234,7 @@ func endpointPickerConfig(spec platformruntime.Spec) (string, error) {
 			},
 		},
 		"schedulingProfiles": []any{map[string]any{
-			"name": "default", "plugins": []any{
-				map[string]any{"pluginRef": "routing-scorer"},
-				map[string]any{"pluginRef": "picker"},
-			},
+			"name": "default", "plugins": profile,
 		}},
 	}
 	encoded, err := json.MarshalIndent(config, "", "  ")
@@ -209,6 +256,18 @@ func endpointPickerDeployment(spec platformruntime.Spec, names RevisionNames, la
 	allowPrivilegeEscalation := false
 	const healthPort = int32(9003)
 	readinessService := "readiness"
+	modelMetricsPort := platformruntime.ServingPort
+	if spec.ResolvedBackend == platformruntime.BackendTRTLLM {
+		modelMetricsPort = 9000
+	}
+	var environment []corev1.EnvVar
+	if spec.Tracing {
+		environment = []corev1.EnvVar{
+			{Name: "OTEL_TRACES_EXPORTER", Value: "otlp"},
+			{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: config.OTLPEndpoint},
+			{Name: "OTEL_SERVICE_NAME", Value: "inferscale-epp"},
+		}
+	}
 	return &appsv1.Deployment{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
 		ObjectMeta: metav1.ObjectMeta{Name: names.EndpointPicker, Namespace: spec.Namespace, Labels: labels},
@@ -228,13 +287,16 @@ func endpointPickerDeployment(spec platformruntime.Spec, names RevisionNames, la
 							"--pool-namespace=" + spec.Namespace,
 							"--grpc-port=" + strconv.FormatInt(int64(eppPort), 10),
 							"--metrics-port=" + strconv.FormatInt(int64(metricsPort), 10),
+							"--model-server-metrics-port=" + strconv.FormatInt(int64(modelMetricsPort), 10),
 							"--grpc-health-port=" + strconv.FormatInt(int64(healthPort), 10),
 							"--secure-serving=true",
 							// Metrics follow the runtime scrape contract: HTTP on
 							// a tenant-isolated port reachable only by monitoring.
 							"--metrics-endpoint-auth=false",
 							"--enable-pprof=false",
+							"--tracing=" + strconv.FormatBool(spec.Tracing),
 						},
+						Env: environment,
 						Ports: []corev1.ContainerPort{
 							{Name: "grpc", ContainerPort: eppPort, Protocol: corev1.ProtocolTCP},
 							{Name: "metrics", ContainerPort: metricsPort, Protocol: corev1.ProtocolTCP},
@@ -282,7 +344,7 @@ func serviceMonitor(namespace, name string, labels map[string]string, port, path
 	)
 }
 
-func runtimeNetworkPolicy(namespace, revision string, labels map[string]string, gatewayNamespace, monitoringNamespace string) *networkingv1.NetworkPolicy {
+func runtimeNetworkPolicy(namespace, revision string, labels map[string]string, gatewayNamespace, monitoringNamespace string, backend platformruntime.Backend) *networkingv1.NetworkPolicy {
 	from := []networkingv1.NetworkPolicyPeer{{PodSelector: &metav1.LabelSelector{}}}
 	for _, allowedNamespace := range []string{gatewayNamespace, monitoringNamespace} {
 		if allowedNamespace == "" || allowedNamespace == namespace {
@@ -293,16 +355,43 @@ func runtimeNetworkPolicy(namespace, revision string, labels map[string]string, 
 		}}})
 	}
 	protocol := corev1.ProtocolTCP
+	ingress := []networkingv1.NetworkPolicyIngressRule{{
+		From:  from,
+		Ports: []networkingv1.NetworkPolicyPort{{Protocol: &protocol, Port: &intstr.IntOrString{Type: intstr.Int, IntVal: platformruntime.ServingPort}}},
+	}}
+	endpointPickerPort := int32(5557)
+	if backend == platformruntime.BackendTRTLLM {
+		endpointPickerPort = 9000
+	}
+	// KV event subscriptions and TRT metrics must reach the worker from its
+	// own revision EPP. Namespace default-deny would otherwise block them.
+	ingress = append(ingress, networkingv1.NetworkPolicyIngressRule{
+		From: []networkingv1.NetworkPolicyPeer{{PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+			kubeutil.LabelComponent: "endpoint-picker", kubeutil.LabelRevision: revision,
+		}}}},
+		Ports: []networkingv1.NetworkPolicyPort{{Protocol: &protocol, Port: &intstr.IntOrString{Type: intstr.Int, IntVal: endpointPickerPort}}},
+	})
+	if backend == platformruntime.BackendTRTLLM && monitoringNamespace != "" {
+		metricsFrom := []networkingv1.NetworkPolicyPeer{}
+		if monitoringNamespace == namespace {
+			metricsFrom = append(metricsFrom, networkingv1.NetworkPolicyPeer{PodSelector: &metav1.LabelSelector{}})
+		} else {
+			metricsFrom = append(metricsFrom, networkingv1.NetworkPolicyPeer{NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+				"kubernetes.io/metadata.name": monitoringNamespace,
+			}}})
+		}
+		ingress = append(ingress, networkingv1.NetworkPolicyIngressRule{
+			From:  metricsFrom,
+			Ports: []networkingv1.NetworkPolicyPort{{Protocol: &protocol, Port: &intstr.IntOrString{Type: intstr.Int, IntVal: 9000}}},
+		})
+	}
 	return &networkingv1.NetworkPolicy{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"},
 		ObjectMeta: metav1.ObjectMeta{Name: kubeutil.ResourceName(revision, "runtime"), Namespace: namespace, Labels: labels},
 		Spec: networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{MatchLabels: labels},
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
-			Ingress: []networkingv1.NetworkPolicyIngressRule{{
-				From:  from,
-				Ports: []networkingv1.NetworkPolicyPort{{Protocol: &protocol, Port: &intstr.IntOrString{Type: intstr.Int, IntVal: platformruntime.ServingPort}}},
-			}},
+			Ingress:     ingress,
 		},
 	}
 }

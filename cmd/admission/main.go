@@ -38,8 +38,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if cfg.DatabaseURL == "" || cfg.ValkeyAddr == "" || cfg.BenchmarkCallbackSigningKey == "" {
-		return errors.New("INFERSCALE_DATABASE_URL, INFERSCALE_VALKEY_ADDR, and INFERSCALE_BENCHMARK_CALLBACK_SIGNING_KEY are required")
+	if cfg.DatabaseURL == "" || (cfg.ValkeyAddr == "" && cfg.ValkeyURL == "") || cfg.BenchmarkCallbackSigningKey == "" {
+		return errors.New("INFERSCALE_DATABASE_URL, either INFERSCALE_VALKEY_URL or INFERSCALE_VALKEY_ADDR, and INFERSCALE_BENCHMARK_CALLBACK_SIGNING_KEY are required")
 	}
 	logger := observability.NewLogger(cfg.LogLevel)
 	shutdownTracing, err := observability.InitTracing(ctx, "inferscale-admission", cfg.OTLPEndpoint)
@@ -57,7 +57,7 @@ func run() error {
 		return err
 	}
 	defer store.Close()
-	cache, err := valkey.Open(ctx, valkey.Config{Address: cfg.ValkeyAddr, Prefix: "inferscale"})
+	cache, err := valkey.Open(ctx, valkey.Config{URL: cfg.ValkeyURL, Address: cfg.ValkeyAddr, Prefix: "inferscale"})
 	if err != nil {
 		return err
 	}

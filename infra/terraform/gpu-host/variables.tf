@@ -7,6 +7,16 @@ variable "host" {
   }
 }
 
+variable "ssh_port" {
+  description = "SSH port from the provider's connection command; Vast often maps a non-default port."
+  type        = number
+  default     = 22
+  validation {
+    condition     = var.ssh_port >= 1 && var.ssh_port <= 65535 && floor(var.ssh_port) == var.ssh_port
+    error_message = "ssh_port must be an integer between 1 and 65535."
+  }
+}
+
 variable "ssh_user" {
   description = "Unprivileged SSH user with passwordless sudo."
   type        = string
@@ -48,8 +58,18 @@ variable "expected_gpu_count" {
   description = "Expected co-located RTX 5090 count."
   type        = number
   validation {
-    condition     = contains([1, 2, 4], var.expected_gpu_count)
-    error_message = "expected_gpu_count must be 1, 2, or 4."
+    condition     = contains([1, 2, 4, 8], var.expected_gpu_count)
+    error_message = "expected_gpu_count must be 1, 2, 4, or 8 (host capacity, not tensor parallelism)."
+  }
+}
+
+variable "node_name" {
+  description = "Unique Kubernetes node name used for node-local cache placement."
+  type        = string
+  default     = "inferscale-gpu-01"
+  validation {
+    condition     = can(regex("^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$", var.node_name)) && length(var.node_name) <= 253
+    error_message = "node_name must be a Kubernetes node name."
   }
 }
 

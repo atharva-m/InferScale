@@ -77,9 +77,9 @@ if [[ "${platform_ready}" == "true" ]]; then
   if [[ -f "${crd_file}" ]]; then
     kubectl apply --server-side --field-manager=inferscale-bootstrap -f "${crd_file}"
   fi
-  kubectl -n inferscale-system delete job inferscale-migrate-000001 inferscale-migrate-000002 inferscale-migrate-000003 inferscale-migrate-000004 inferscale-migrate-000005 --ignore-not-found --wait=true
+  kubectl -n inferscale-system delete job inferscale-migrate-000001 inferscale-migrate-000002 inferscale-migrate-000003 inferscale-migrate-000004 inferscale-migrate-000005 inferscale-migrate-000006 --ignore-not-found --wait=true
   kubectl apply --server-side --field-manager=inferscale-bootstrap -k "${repo_root}/deploy/overlays/local-wsl"
-  kubectl -n inferscale-system wait --for=condition=complete job/inferscale-migrate-000005 --timeout=300s
+  kubectl -n inferscale-system wait --for=condition=complete job/inferscale-migrate-000006 --timeout=300s
   wait_for_deployment inferscale-system inferscale-api 300s
   wait_for_deployment inferscale-system inferscale-controller 300s
   wait_for_deployment inferscale-system inferscale-admission 300s

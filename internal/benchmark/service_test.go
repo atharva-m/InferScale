@@ -54,7 +54,7 @@ func validRunningRun() Run {
 			ModelURI: "hf://Qwen/Qwen3", ModelRevision: strings.Repeat("a", 40),
 			Backend: BackendVLLM, RuntimeImageDigest: "sha256:" + strings.Repeat("b", 64),
 			GPUSKU: "RTX_5090", GPUCount: 1, Precision: "bf16", Quantization: "none",
-			TensorParallelism: 1, MaxContextBucket: 8192, RoutingPolicy: "round-robin",
+			TensorParallelism: 1, MaxContextBucket: 8192, RoutingPolicy: "round-robin", PrefixCaching: true,
 		},
 		Execution: ExecutionContract{
 			Provider: "vast", BenchmarkTool: ScheduledBenchmarkTool, RoutingPolicy: "round-robin", InferenceBaseURL: "https://gateway.example",
@@ -100,8 +100,10 @@ func validResultReport(run Run) ResultReport {
 			"benchmark_tool":          ScheduledBenchmarkTool,
 			"gpu_hourly_price":        float64(0),
 			"telemetry_evidence": map[string]any{
-				"valid": true,
+				"valid":                true,
+				"prefix_cache_enabled": true,
 				"required_queries": []any{
+					"prefix_cache_hit_ratio",
 					"gpu_memory_used_bytes", "gpu_power_watts", "gpu_utilization", "kv_cache_utilization",
 					"queue_p95_seconds", "running_requests", "waiting_requests",
 				},
@@ -197,6 +199,26 @@ func TestIngestResultRejectsMissingOrMismatchedTelemetryEvidence(t *testing.T) {
 	evidence["expected_gpu_sku"] = "A100"
 	if _, err := service.IngestResult(context.Background(), "run", report); !errors.Is(err, ErrInvalidReport) {
 		t.Fatalf("mismatched GPU evidence error = %v", err)
+	}
+
+	report = validResultReport(run)
+	evidence = report.Provenance["telemetry_evidence"].(map[string]any)
+	evidence["prefix_cache_enabled"] = false
+	if _, err := service.IngestResult(context.Background(), "run", report); !errors.Is(err, ErrInvalidReport) {
+		t.Fatalf("mismatched prefix-cache evidence error = %v", err)
+	}
+
+	run.Serving.PrefixCaching = false
+	report = validResultReport(run)
+	evidence = report.Provenance["telemetry_evidence"].(map[string]any)
+	evidence["prefix_cache_enabled"] = false
+	evidence["required_queries"] = []any{
+		"gpu_memory_used_bytes", "gpu_power_watts", "gpu_utilization", "kv_cache_utilization",
+		"queue_p95_seconds", "running_requests", "waiting_requests",
+	}
+	repository.run = run
+	if _, err := service.IngestResult(context.Background(), "run", report); err != nil {
+		t.Fatalf("prefix-cache-disabled telemetry evidence should be accepted: %v", err)
 	}
 }
 

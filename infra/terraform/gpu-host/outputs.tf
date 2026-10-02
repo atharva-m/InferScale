@@ -3,7 +3,7 @@ output "host" {
 }
 
 output "kubeconfig_command" {
-  value = "ssh ${var.ssh_user}@${var.host} sudo cat /etc/rancher/k3s/k3s.yaml"
+  value = "ssh -p ${var.ssh_port} ${var.ssh_user}@${var.host} sudo cat /etc/rancher/k3s/k3s.yaml"
 }
 
 output "expected_gpu_count" {
@@ -12,4 +12,8 @@ output "expected_gpu_count" {
 
 output "gpu_sku" {
   value = var.gpu_sku
+}
+
+output "node_name" {
+  value = var.node_name
 }

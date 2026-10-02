@@ -9,6 +9,7 @@ import (
 	platformruntime "github.com/inferscale/inferscale/internal/runtime"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
@@ -209,6 +210,55 @@ func TestTensorRTRuntimeMonitorScrapesExporterPort(t *testing.T) {
 		return
 	}
 	t.Fatal("TensorRT runtime ServiceMonitor was not rendered")
+}
+
+func TestTensorRTRuntimePolicyAllowsMonitoringExporterOnly(t *testing.T) {
+	t.Parallel()
+	spec := platformruntime.Spec{
+		DeploymentName: "chat", Namespace: "tenant-a", Tenant: "a", ModelName: "qwen",
+		ModelURI: "hf://Qwen/Qwen3-8B", ModelRevision: "abc", ResolvedBackend: platformruntime.BackendTRTLLM,
+		Precision: "bf16", TensorParallel: 1, AcceleratorCount: 1, MaxModelLen: 8192,
+		MaxConcurrentRequests: 32, MaxQueuedRequests: 128, RoutingPolicy: "load-aware",
+	}
+	rendered, err := (Renderer{Config: Config{
+		EndpointPickerImage: "epp@sha256:deadbeef", GatewayNamespace: "gateway", MonitoringNamespace: "monitoring",
+	}}).RenderRevision(spec, platformruntime.Revision{Name: "chat-a8f32"}, "chat-a8f32-runtime")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var policy *networkingv1.NetworkPolicy
+	for _, object := range rendered.Objects {
+		if candidate, ok := object.(*networkingv1.NetworkPolicy); ok {
+			policy = candidate
+			break
+		}
+	}
+	if policy == nil {
+		t.Fatal("TensorRT runtime NetworkPolicy was not rendered")
+	}
+	var foundMetricsRule bool
+	for _, rule := range policy.Spec.Ingress {
+		for _, port := range rule.Ports {
+			if port.Port == nil || port.Port.IntVal != 9000 {
+				continue
+			}
+			if len(rule.From) == 1 && rule.From[0].PodSelector != nil && rule.From[0].NamespaceSelector == nil {
+				if rule.From[0].PodSelector.MatchLabels["app.kubernetes.io/component"] != "endpoint-picker" ||
+					rule.From[0].PodSelector.MatchLabels["inferscale.io/revision"] != "chat-a8f32" {
+					t.Fatalf("metrics ingress from tenant must be revision EPP only: %#v", rule.From)
+				}
+				continue
+			}
+			foundMetricsRule = true
+			if len(rule.From) != 1 || rule.From[0].NamespaceSelector == nil ||
+				rule.From[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "monitoring" {
+				t.Fatalf("metrics ingress must be restricted to monitoring namespace: %#v", rule.From)
+			}
+		}
+	}
+	if !foundMetricsRule {
+		t.Fatal("TensorRT runtime NetworkPolicy does not allow exporter port 9000")
+	}
 }
 
 func TestRouteUsesRevisionSpecificObjectiveAndServiceShadow(t *testing.T) {

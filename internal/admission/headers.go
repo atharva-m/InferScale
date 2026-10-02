@@ -19,6 +19,9 @@ const (
 
 var untrustedHeaders = []string{
 	"authorization",
+	// Baggage can carry arbitrary request content through telemetry systems.
+	// Disabling the propagator alone does not remove the original HTTP header.
+	"baggage",
 	HeaderFairnessID,
 	HeaderObjective,
 	HeaderModelRewrite,

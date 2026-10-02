@@ -75,7 +75,7 @@ func (r *Reconciler) createModelCacheVerifier(ctx context.Context, owner *platfo
 	return nil
 }
 
-func (r *Reconciler) deleteModelCacheVerifier(ctx context.Context, verifier *batchv1.Job) error {
+func (r *Reconciler) deleteModelCacheJob(ctx context.Context, verifier *batchv1.Job) error {
 	// A delayed consumer of the previous proof must never delete its newer
 	// replacement, which intentionally has the same deterministic name.
 	preconditions := &metav1.Preconditions{}
@@ -87,7 +87,13 @@ func (r *Reconciler) deleteModelCacheVerifier(ctx context.Context, verifier *bat
 		version := verifier.ResourceVersion
 		preconditions.ResourceVersion = &version
 	}
-	err := r.Delete(ctx, verifier, &client.DeleteOptions{Preconditions: preconditions})
+	// Job deletion can default to orphaning its Pods. Periodic proof renewal
+	// must collect the old completed Pods as well as the Job, otherwise every
+	// five-minute verification leaves permanent objects in the tenant namespace.
+	propagation := metav1.DeletePropagationBackground
+	err := r.Delete(ctx, verifier, &client.DeleteOptions{
+		Preconditions: preconditions, PropagationPolicy: &propagation,
+	})
 	if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
 		return nil
 	}

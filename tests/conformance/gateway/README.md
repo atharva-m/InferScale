@@ -11,6 +11,22 @@ versions implement those fields. Before a release, deploy the exact digests in
 `versions.lock.yaml` to a disposable cluster and capture evidence for every
 entry in `conformance.requiredFeatures`:
 
+`scripts/e2e/live-gateway-conformance.sh` now provides the executable CPU-only
+weighted-backend/mirror/auth-spoof/SSE/cancellation/backpressure experiments.
+It creates isolated test routes and fake revision pools against an existing
+authorized deployment; see `scripts/e2e/README.md` for setup, limits, cleanup,
+and the remaining evidence. Set `INFERSCALE_CONFORMANCE_REQUESTS=1000` for
+release-size traffic samples. Its artifact intentionally remains partial live
+evidence, not the completed release-gate document described below.
+
+`scripts/e2e/live-trace-conformance.sh` supplies a separate redacted summary
+for the successful non-streaming vLLM trace case in item 7. It requires
+existing loopback Gateway/Tempo forwards and verifies parent linkage through
+all four services, plus exported-data privacy during a bounded settle window.
+See `scripts/e2e/README.md` for credentials, exact service identities, and
+coverage limits. Its result is partial evidence with `release_signoff:false`;
+streaming/error paths and exact image identities still require qualification.
+
 1. Show an invalid/revoked key is rejected before EPP and an ext-auth/Valkey
    outage returns 503 for new requests.
 2. Stream a native completion through EPP, observe incremental SSE and

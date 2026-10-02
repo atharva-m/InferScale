@@ -13,6 +13,7 @@ metadata:
     pod-security.kubernetes.io/enforce: privileged
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/enforce-version: latest
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -24,18 +25,12 @@ automountServiceAccountToken: false
 apiVersion: v1
 kind: ResourceQuota
 metadata:
-  name: inferscale-tenant-quota
+  name: inferscale-tenant
   namespace: TENANT_NAMESPACE
   annotations:
     inferscale.io/steady-state-gpu-quota: "GPU_QUOTA"
 spec:
   hard:
-    pods: "50"
-    services: "20"
-    requests.cpu: "64"
-    requests.memory: 256Gi
-    limits.cpu: "128"
-    limits.memory: 512Gi
     requests.nvidia.com/gpu: "GPU_RESOURCE_QUOTA"
     limits.nvidia.com/gpu: "GPU_RESOURCE_QUOTA"
 ---
@@ -48,7 +43,10 @@ spec:
   limits:
     - type: Container
       min: {cpu: 10m, memory: 16Mi}
-      max: {cpu: "128", memory: 512Gi}
+      defaultRequest: {cpu: 100m, memory: 128Mi}
+      # Container maxima become default limits in Kubernetes. Avoid assigning
+      # EPP huge resources or restricting GPU workers/builders to a small
+      # blanket memory limit: their requirements depend on the served model.
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -62,33 +60,100 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-platform-paths
+  name: allow-dns-egress
   namespace: TENANT_NAMESPACE
 spec:
   podSelector: {}
-  policyTypes: [Ingress, Egress]
-  ingress:
-    - from:
-        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: inferscale-gateway}}
-      ports:
-        - {protocol: TCP, port: 8000}
-        - {protocol: TCP, port: 9002}
-    - from:
-        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: inferscale-monitoring}}
-      ports:
-        - {protocol: TCP, port: 8000}
-        - {protocol: TCP, port: 9090}
+  policyTypes: [Egress]
   egress:
     - to:
         - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {k8s-app: kube-dns}}
       ports:
         - {protocol: UDP, port: 53}
         - {protocol: TCP, port: 53}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-gateway-ingress
+  namespace: TENANT_NAMESPACE
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {inferscale.io/access-role: gateway}}
+      ports:
+        - {protocol: TCP, port: 8000}
+        - {protocol: TCP, port: 9002}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-monitoring-ingress
+  namespace: TENANT_NAMESPACE
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {inferscale.io/access-role: monitoring}}
+          podSelector: {matchLabels: {app.kubernetes.io/name: prometheus}}
+      ports:
+        - {protocol: TCP, port: 8000}
+        - {protocol: TCP, port: 9000}
+        - {protocol: TCP, port: 9090}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-otel-egress
+  namespace: TENANT_NAMESPACE
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
     - to:
-        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: inferscale-monitoring}}
+        - namespaceSelector: {matchLabels: {inferscale.io/access-role: monitoring}}
+          podSelector: {matchLabels: {app.kubernetes.io/name: otel-collector}}
       ports:
         - {protocol: TCP, port: 4317}
         - {protocol: TCP, port: 4318}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-same-namespace-egress
+  namespace: TENANT_NAMESPACE
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-https-egress
+  namespace: TENANT_NAMESPACE
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - ports:
+        - {protocol: TCP, port: 443}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kubernetes-api-egress
+  namespace: TENANT_NAMESPACE
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
     - ports:
         - {protocol: TCP, port: 443}
 ---
@@ -108,8 +173,32 @@ spec:
           podSelector: {matchLabels: {app.kubernetes.io/name: inferscale-api}}
       ports:
         - {protocol: TCP, port: 8080}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-benchmark-gateway-egress
+  namespace: TENANT_NAMESPACE
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: inferscale-benchmark
+  policyTypes: [Egress]
+  egress:
     - to:
         - namespaceSelector: {matchLabels: {inferscale.io/access-role: gateway}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-benchmark-prometheus-egress
+  namespace: TENANT_NAMESPACE
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: inferscale-benchmark
+  policyTypes: [Egress]
+  egress:
     - to:
         - namespaceSelector: {matchLabels: {inferscale.io/access-role: monitoring}}
           podSelector: {matchLabels: {app.kubernetes.io/name: prometheus}}

@@ -93,6 +93,8 @@ func newTenantCommand(runtime *operatorRuntime) *cobra.Command {
 			repository := postgres.NewTenantRepository(store)
 			service := tenant.NewService(repository, tenant.WithNamespaceProvisioner(tenant.NamespaceProvisioner{
 				Client: kube, FieldOwner: "inferscalectl",
+				KubernetesAPIServerCIDRs: runtime.config.KubernetesAPICIDRs,
+				KubernetesAPIServerPort:  int32(runtime.config.KubernetesAPIPort),
 			}))
 			value, err := (admin.TenantAdmin{Service: service, Repository: repository}).Create(cmd.Context(), create.slug, create.name, tenant.Quota{
 				MaxDeployments: create.maxDeployments, MaxGPUs: create.maxGPUs,
@@ -171,7 +173,11 @@ func tenantStateCommand(runtime *operatorRuntime, action string) *cobra.Command 
 				if kubeErr != nil {
 					return kubeErr
 				}
-				options = append(options, tenant.WithNamespaceProvisioner(tenant.NamespaceProvisioner{Client: kube, FieldOwner: "inferscalectl"}))
+				options = append(options, tenant.WithNamespaceProvisioner(tenant.NamespaceProvisioner{
+					Client: kube, FieldOwner: "inferscalectl",
+					KubernetesAPIServerCIDRs: runtime.config.KubernetesAPICIDRs,
+					KubernetesAPIServerPort:  int32(runtime.config.KubernetesAPIPort),
+				}))
 			}
 			operator := admin.TenantAdmin{Service: tenant.NewService(repository, options...), Repository: repository}
 			switch action {

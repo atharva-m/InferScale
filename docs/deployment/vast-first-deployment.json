@@ -1,0 +1,23 @@
+{
+  "name": "qwen3-8b",
+  "model": {
+    "uri": "hf://Qwen/Qwen3-8B",
+    "revision": "b968826d9c46dd6066d109eabc6255188de91218"
+  },
+  "backend": "vllm",
+  "gpu": {"type": "RTX_5090", "count": 1},
+  "tensor_parallelism": 1,
+  "precision": "bf16",
+  "quantization": "none",
+  "max_model_len": 4096,
+  "prefix_caching": true,
+  "min_replicas": 1,
+  "max_replicas": 1,
+  "admission": {
+    "maxConcurrentRequests": 2,
+    "maxQueuedRequests": 8,
+    "priorityClass": "standard"
+  },
+  "routing": {"policy": "load-aware"},
+  "observability": {"tracing": true}
+}

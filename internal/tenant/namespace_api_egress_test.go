@@ -61,3 +61,28 @@ func TestNamespaceKubernetesAPIEgressFallbackAndCIDR(t *testing.T) {
 		})
 	}
 }
+
+func TestNamespaceKubernetesAPIEgressAfterK3sDNAT(t *testing.T) {
+	objects := NamespaceBaselineWithOptions(&Tenant{Slug: "acme", Namespace: "tenant-acme"}, NamespaceOptions{
+		KubernetesAPIServerCIDRs: []string{"10.0.0.12/32", "fd00::12/128"},
+		KubernetesAPIServerPort:  6443,
+	})
+	for _, object := range objects {
+		policy, ok := object.(*networkingv1.NetworkPolicy)
+		if !ok || policy.Name != "allow-kubernetes-api-egress" {
+			continue
+		}
+		rules := policy.Spec.Egress
+		if len(rules) != 1 || len(rules[0].To) != 2 || len(rules[0].Ports) != 1 || rules[0].Ports[0].Port.IntVal != 6443 {
+			t.Fatalf("expected one bounded dual-stack TCP6443 egress rule: %#v", rules)
+		}
+		for i, cidr := range []string{"10.0.0.12/32", "fd00::12/128"} {
+			peer := rules[0].To[i]
+			if peer.IPBlock == nil || peer.IPBlock.CIDR != cidr || peer.NamespaceSelector != nil || peer.PodSelector != nil {
+				t.Fatalf("API egress escaped its explicit endpoint: %#v", peer)
+			}
+		}
+		return
+	}
+	t.Fatal("missing API egress policy")
+}

@@ -2,6 +2,7 @@ package valkey
 
 import (
 	"context"
+	"crypto/tls"
 	"os"
 	"strings"
 	"sync"
@@ -12,6 +13,51 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
+
+func TestManagedValkeyConnection(t *testing.T) {
+	options, err := connectionOptions(Config{
+		URL:     "rediss://tenant:p%40ss%3Aword@cache.example.com:6380/2",
+		Address: "unused:6379", Username: "unused", Password: "unused", Database: 9,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.Addr != "cache.example.com:6380" || options.Username != "tenant" || options.Password != "p@ss:word" || options.DB != 2 {
+		t.Fatal("managed URL did not override legacy address/auth/database or decode credentials")
+	}
+	if options.TLSConfig == nil || options.TLSConfig.InsecureSkipVerify || options.TLSConfig.MinVersion != tls.VersionTLS12 || options.TLSConfig.ServerName != "cache.example.com" {
+		t.Fatal("managed rediss connection must verify the server certificate and require TLS 1.2 or newer")
+	}
+}
+
+func TestValkeyConnectionRejectsUnsafeURLsWithoutLeakingCredentials(t *testing.T) {
+	for _, value := range []string{
+		"https://user:private-marker@cache.example.com",
+		"rediss://user:private-marker@/0",
+		"rediss://user:private-marker@cache.example.com/not-a-database",
+		"rediss://user:private-marker@cache.example.com:bad/0",
+		"rediss://user:private-marker@cache.example.com/0?skip_verify=true",
+		"rediss://user:private-marker@cache.example.com/0#fragment",
+		"rediss://user:private-marker@cache.example.com/0\n",
+		"rediss://user:private-marker%XX@cache.example.com/0",
+	} {
+		_, err := connectionOptions(Config{URL: value})
+		if err == nil || strings.Contains(err.Error(), "private-marker") {
+			t.Fatalf("invalid connection must fail without leaking its password; error=%v", err)
+		}
+	}
+}
+
+func TestLegacyValkeyConnection(t *testing.T) {
+	options, err := connectionOptions(Config{Address: "valkey:6379", Username: "local", Password: "secret", Database: 1})
+	if err != nil || options.Addr != "valkey:6379" || options.Username != "local" || options.Password != "secret" || options.DB != 1 || options.TLSConfig != nil {
+		t.Fatal("legacy local connection settings changed")
+	}
+	options, err = connectionOptions(Config{URL: "redis://valkey:6379/0"})
+	if err != nil || options.TLSConfig != nil {
+		t.Fatal("local redis URL should remain supported")
+	}
+}
 
 func TestKeyNamespacing(t *testing.T) {
 	client := &Client{prefix: "test"}
@@ -29,6 +75,22 @@ func TestRateLimiterIsAnAtomicTokenBucketScript(t *testing.T) {
 	}
 	if strings.Contains(rateScriptSource, "INCR") {
 		t.Fatal("rate limiter regressed to a fixed-window counter")
+	}
+}
+
+func TestValkeyDurationInputsRejectSubMillisecondValues(t *testing.T) {
+	client := &Client{}
+	if _, err := client.AllowRate(context.Background(), "tenant", 1, time.Microsecond); err == nil {
+		t.Fatal("sub-millisecond rate window was accepted")
+	}
+	if _, _, err := client.AcquireConcurrency(context.Background(), "tenant", 1, time.Microsecond); err == nil {
+		t.Fatal("sub-millisecond concurrency TTL was accepted")
+	}
+	if _, err := client.PutIdempotency(context.Background(), "tenant", "request", nil, time.Microsecond); err == nil {
+		t.Fatal("sub-millisecond idempotency TTL was accepted")
+	}
+	if _, _, err := client.AcquireLock(context.Background(), "namespace", "name", time.Microsecond); err == nil {
+		t.Fatal("sub-millisecond lock TTL was accepted")
 	}
 }
 

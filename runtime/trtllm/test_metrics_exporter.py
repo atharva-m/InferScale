@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 from types import ModuleType
+
+import pytest
 
 
 def _load_exporter() -> ModuleType:
@@ -51,3 +54,31 @@ def test_render_failure_exposes_only_exporter_health() -> None:
 
     assert "inferscale_trtllm_metrics_scrape_success 0" in body
     assert "inferscale_trtllm_active_requests" not in body
+
+
+@pytest.mark.parametrize("hit_ratio", [0, 0.75, 1])
+def test_exports_observed_native_prefix_cache_hit_ratio(hit_ratio: float) -> None:
+    metrics = exporter.parse_snapshot({"kvCacheStats": {"cacheHitRate": hit_ratio}})
+
+    assert metrics["inferscale_trtllm_prefix_cache_hit_ratio"] == hit_ratio
+
+
+def test_parses_json_encoded_native_iteration_entries() -> None:
+    metrics = exporter.parse_snapshot(
+        [json.dumps({"kvCacheStats": {"cacheHitRate": 0.5}})]
+    )
+
+    assert metrics["inferscale_trtllm_prefix_cache_hit_ratio"] == 0.5
+
+
+@pytest.mark.parametrize("payload", [["broken-json"], ["null"], ["[]"], []])
+def test_rejects_invalid_native_iteration_entries(payload: object) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        exporter.parse_snapshot(payload)
+
+
+@pytest.mark.parametrize("hit_ratio", [None, True, "0.5", -1, 1.01, float("nan"), float("inf")])
+def test_omits_missing_or_invalid_prefix_cache_hit_ratio(hit_ratio: object) -> None:
+    metrics = exporter.parse_snapshot({"kvCacheStats": {"cacheHitRate": hit_ratio}})
+
+    assert "inferscale_trtllm_prefix_cache_hit_ratio" not in metrics

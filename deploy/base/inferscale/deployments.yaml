@@ -36,7 +36,9 @@ spec:
             - name: INFERSCALE_DATABASE_URL
               valueFrom: {secretKeyRef: {name: inferscale-storage, key: database_url}}
             - name: INFERSCALE_VALKEY_ADDR
-              valueFrom: {secretKeyRef: {name: inferscale-storage, key: valkey_addr}}
+              valueFrom: {secretKeyRef: {name: inferscale-storage, key: valkey_addr, optional: true}}
+            - name: INFERSCALE_VALKEY_URL
+              valueFrom: {secretKeyRef: {name: inferscale-storage, key: valkey_url, optional: true}}
             - name: INFERSCALE_BENCHMARK_CALLBACK_SIGNING_KEY
               valueFrom: {secretKeyRef: {name: inferscale-storage, key: benchmark_callback_signing_key}}
             - name: INFERSCALE_BENCHMARK_IMAGE
@@ -93,7 +95,7 @@ spec:
             - name: INFERSCALE_DATABASE_URL
               valueFrom: {secretKeyRef: {name: inferscale-storage, key: database_url}}
             - name: INFERSCALE_VALKEY_ADDR
-              valueFrom: {secretKeyRef: {name: inferscale-storage, key: valkey_addr}}
+              valueFrom: {secretKeyRef: {name: inferscale-storage, key: valkey_addr, optional: true}}
             - name: INFERSCALE_VLLM_IMAGE
               valueFrom: {secretKeyRef: {name: inferscale-storage, key: runtime_vllm_image}}
             - name: INFERSCALE_TRTLLM_IMAGE
@@ -156,7 +158,9 @@ spec:
             - name: INFERSCALE_DATABASE_URL
               valueFrom: {secretKeyRef: {name: inferscale-storage, key: database_url}}
             - name: INFERSCALE_VALKEY_ADDR
-              valueFrom: {secretKeyRef: {name: inferscale-storage, key: valkey_addr}}
+              valueFrom: {secretKeyRef: {name: inferscale-storage, key: valkey_addr, optional: true}}
+            - name: INFERSCALE_VALKEY_URL
+              valueFrom: {secretKeyRef: {name: inferscale-storage, key: valkey_url, optional: true}}
             - name: INFERSCALE_BENCHMARK_CALLBACK_SIGNING_KEY
               valueFrom: {secretKeyRef: {name: inferscale-storage, key: benchmark_callback_signing_key}}
           resources:

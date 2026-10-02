@@ -42,9 +42,13 @@ type chatMessage struct {
 }
 
 type server struct {
-	model    string
-	sequence atomic.Uint64
-	requests atomic.Uint64
+	model     string
+	sequence  atomic.Uint64
+	requests  atomic.Uint64
+	active    atomic.Int64
+	canceled  atomic.Uint64
+	completed atomic.Uint64
+	test      *testControls
 }
 
 func main() {
@@ -64,10 +68,12 @@ func run() error {
 		address = ":8000"
 	}
 	application := &server{model: model}
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", application.health)
-	mux.HandleFunc("GET /metrics", application.metrics)
-	mux.HandleFunc("POST /v1/chat/completions", application.chatCompletions)
+	test, err := testControlsFromEnvironment()
+	if err != nil {
+		return err
+	}
+	application.test = test
+	mux := application.handler()
 
 	httpServer := &http.Server{
 		Addr:              address,
@@ -95,6 +101,18 @@ func run() error {
 	}
 }
 
+func (s *server) handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", s.health)
+	mux.HandleFunc("GET /metrics", s.metrics)
+	mux.HandleFunc("POST /v1/chat/completions", s.chatCompletions)
+	if s.test != nil {
+		mux.HandleFunc("GET /__inferscale_test/state", s.testState)
+		mux.HandleFunc("POST /__inferscale_test/control", s.testControl)
+	}
+	return mux
+}
+
 func (s *server) health(writer http.ResponseWriter, _ *http.Request) {
 	writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = io.WriteString(writer, "ok\n")
@@ -105,8 +123,9 @@ func (s *server) metrics(writer http.ResponseWriter, _ *http.Request) {
 	_, _ = fmt.Fprintf(writer, "# HELP inferscale_fake_requests_total Local fake chat requests.\n")
 	_, _ = fmt.Fprintf(writer, "# TYPE inferscale_fake_requests_total counter\n")
 	_, _ = fmt.Fprintf(writer, "inferscale_fake_requests_total %d\n", s.requests.Load())
-	_, _ = io.WriteString(writer, "# TYPE vllm:num_requests_running gauge\nvllm:num_requests_running 0\n")
+	_, _ = fmt.Fprintf(writer, "# TYPE vllm:num_requests_running gauge\nvllm:num_requests_running %d\n", s.active.Load())
 	_, _ = io.WriteString(writer, "# TYPE vllm:num_requests_waiting gauge\nvllm:num_requests_waiting 0\n")
+	_, _ = fmt.Fprintf(writer, "# TYPE inferscale_fake_canceled_total counter\ninferscale_fake_canceled_total %d\n", s.canceled.Load())
 }
 
 func (s *server) chatCompletions(writer http.ResponseWriter, request *http.Request) {
@@ -136,6 +155,20 @@ func (s *server) chatCompletions(writer http.ResponseWriter, request *http.Reque
 		}
 	}
 	s.requests.Add(1)
+	s.active.Add(1)
+	defer func() {
+		s.active.Add(-1)
+		if request.Context().Err() != nil {
+			s.canceled.Add(1)
+		}
+	}()
+	if s.test != nil {
+		s.test.observe(request)
+		writer.Header().Set("X-InferScale-Test-Identity", s.test.identity)
+		if !waitTestDelay(request.Context(), s.test.responseDelayMS.Load()) {
+			return
+		}
+	}
 	id := "chatcmpl-local-" + strconv.FormatUint(s.sequence.Add(1), 10)
 	created := time.Now().Unix()
 	content := "InferScale local fake runtime response."
@@ -148,6 +181,7 @@ func (s *server) chatCompletions(writer http.ResponseWriter, request *http.Reque
 			}},
 			"usage": usage,
 		})
+		s.completed.Add(1)
 		return
 	}
 	flusher, ok := writer.(http.Flusher)
@@ -163,6 +197,9 @@ func (s *server) chatCompletions(writer http.ResponseWriter, request *http.Reque
 		"choices": []any{map[string]any{"index": 0, "delta": map[string]string{"role": "assistant", "content": content}, "finish_reason": nil}},
 	})
 	flusher.Flush()
+	if s.test != nil && !waitTestDelay(request.Context(), s.test.streamDelayMS.Load()) {
+		return
+	}
 	select {
 	case <-request.Context().Done():
 		return
@@ -180,6 +217,7 @@ func (s *server) chatCompletions(writer http.ResponseWriter, request *http.Reque
 	}
 	_, _ = io.WriteString(writer, "data: [DONE]\n\n")
 	flusher.Flush()
+	s.completed.Add(1)
 }
 
 func writeSSE(writer io.Writer, value any) {

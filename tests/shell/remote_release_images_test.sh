@@ -120,3 +120,103 @@ if "${repo_root}/scripts/render-remote-release.sh" remote >"${render_dir}/invali
   exit 1
 fi
 grep -Fq 'INFERSCALE_BENCHMARK_CUDA_VERSION must be an explicit CUDA version' "${render_dir}/invalid-cuda.err"
+
+# The single-host eight-GPU manifest can use external stores without leaving
+# development databases running, and all network exceptions remain scoped.
+export INFERSCALE_BENCHMARK_CUDA_VERSION="13.0"
+export REMOTE_EXTERNAL_STORAGE=true
+export CLUSTER_POSTGRES_CIDRS='["10.20.0.10/32"]'
+export CLUSTER_VALKEY_CIDRS='["10.20.0.11/32"]'
+export CLUSTER_KUBERNETES_API_CIDRS='["10.20.0.5/32"]'
+export INFERSCALE_GPU_NODE_NAME="vast-gpu-host"
+"${repo_root}/scripts/render-remote-release.sh" vast-8x5090 >"${render_dir}/external.yaml"
+python3 - "${render_dir}/external.yaml" <<'PY'
+import json
+import pathlib
+import sys
+
+import yaml
+
+documents = list(yaml.safe_load_all(pathlib.Path(sys.argv[1]).read_text()))
+by_key = {(d["kind"], d["metadata"].get("namespace", ""), d["metadata"]["name"]): d for d in documents}
+for kind, name in (("StatefulSet", "postgres"), ("Deployment", "valkey"), ("Service", "postgres"), ("Service", "valkey")):
+    assert (kind, "inferscale-system", name) not in by_key
+assert ("Job", "inferscale-system", "inferscale-migrate-000006") in by_key
+assert not any(d["kind"] == "Secret" for d in documents)
+config = by_key["ConfigMap", "inferscale-system", "inferscale-config"]["data"]
+assert json.loads(config["INFERSCALE_GPU_NODE_SELECTORS"])["RTX_5090"] == {
+    "inferscale.io/gpu-sku": "RTX_5090", "kubernetes.io/hostname": "vast-gpu-host",
+}
+assert json.loads(config["INFERSCALE_KUBERNETES_API_CIDRS"]) == ["10.20.0.5/32"]
+assert config["INFERSCALE_KUBERNETES_API_PORT"] == "6443"
+profile = by_key["ConfigMap", "inferscale-system", "inferscale-gpu-profile"]["data"]
+assert profile["expected_gpu_count"] == "8"
+assert profile["supported_tensor_parallelism"] == "1,2,4"
+for service, cidr, port, allowed in (
+    ("postgres", "10.20.0.10/32", 5432, ["inferscale-api", "inferscale-controller", "inferscale-admission", "inferscale-migrate"]),
+    ("valkey", "10.20.0.11/32", 6379, ["inferscale-api", "inferscale-admission"]),
+    ("kubernetes-api", "10.20.0.5/32", 6443, ["inferscale-api", "inferscale-controller"]),
+):
+    policy = by_key["NetworkPolicy", "inferscale-system", f"allow-configured-{service}"]["spec"]
+    assert policy["podSelector"]["matchExpressions"] == [{
+        "key": "app.kubernetes.io/name", "operator": "In", "values": allowed,
+    }]
+    assert policy["egress"] == [{"to": [{"ipBlock": {"cidr": cidr}}], "ports": [{"protocol": "TCP", "port": port}]}]
+for app in ("api", "admission"):
+    container = by_key["Deployment", "inferscale-system", f"inferscale-{app}"]["spec"]["template"]["spec"]["containers"][0]
+    env = {entry["name"]: entry for entry in container["env"]}
+    assert env["INFERSCALE_VALKEY_URL"]["valueFrom"]["secretKeyRef"] == {
+        "name": "inferscale-storage", "key": "valkey_url", "optional": True,
+    }
+    assert env["INFERSCALE_VALKEY_ADDR"]["valueFrom"]["secretKeyRef"]["optional"] is True
+grafana = by_key["Deployment", "inferscale-monitoring", "grafana"]["spec"]["template"]["spec"]["containers"][0]
+grafana_env = {entry["name"]: entry for entry in grafana["env"]}
+assert grafana_env["GF_AUTH_ANONYMOUS_ENABLED"]["value"] == "false"
+assert grafana_env["GF_SECURITY_ADMIN_PASSWORD"]["valueFrom"]["secretKeyRef"] == {
+    "name": "grafana-admin", "key": "password",
+}
+gateway = by_key["Gateway", "inferscale-gateway", "inferscale"]
+assert gateway["spec"]["listeners"][0]["hostname"] == "inference.example.com"
+PY
+
+for invalid_cidrs in '' '[]' '["0.0.0.0/0"]' '["127.0.0.1/32"]' '["8.8.8.8/32"]' '["10.20.0.1/24"]' '{}'; do
+  export CLUSTER_POSTGRES_CIDRS="${invalid_cidrs}"
+  if "${repo_root}/scripts/render-remote-release.sh" vast-8x5090 >"${render_dir}/invalid-network.yaml" 2>"${render_dir}/invalid-network.err"; then
+    echo "invalid external storage CIDRs were accepted" >&2
+    exit 1
+  fi
+  grep -Fq 'CLUSTER_POSTGRES_CIDRS' "${render_dir}/invalid-network.err"
+done
+export CLUSTER_POSTGRES_CIDRS='["10.20.0.10/32"]'
+export CLUSTER_KUBERNETES_API_CIDRS='["10.20.0.0/24"]'
+if "${repo_root}/scripts/render-remote-release.sh" vast-8x5090 >"${render_dir}/invalid-api.yaml" 2>"${render_dir}/invalid-api.err"; then
+  echo "subnet-wide Kubernetes API access was accepted" >&2
+  exit 1
+fi
+grep -Fq 'exact /32 or /128' "${render_dir}/invalid-api.err"
+export CLUSTER_KUBERNETES_API_CIDRS='["10.20.0.5/32"]'
+unset INFERSCALE_GPU_NODE_NAME
+if "${repo_root}/scripts/render-remote-release.sh" vast-8x5090 >"${render_dir}/missing-node.yaml" 2>"${render_dir}/missing-node.err"; then
+  echo "Vast release omitted explicit GPU node selection" >&2
+  exit 1
+fi
+grep -Fq 'INFERSCALE_GPU_NODE_NAME' "${render_dir}/missing-node.err"
+echo "remote image, TLS, external storage, GPU placement, and scoped network rendering passed"
+
+INFERSCALE_IMAGE_PULL_SECRET=private-registry "${repo_root}/scripts/render-remote-release.sh" remote >"${render_dir}/private-registry.yaml"
+python3 - "${render_dir}/private-registry.yaml" <<'PY'
+import sys
+import yaml
+documents = list(yaml.safe_load_all(open(sys.argv[1])))
+config = next(d for d in documents if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "inferscale-config")
+assert config["data"]["INFERSCALE_IMAGE_PULL_SECRET"] == "private-registry"
+for document in documents:
+    if document.get("kind") not in {"Deployment", "StatefulSet", "Job"}:
+        continue
+    refs = document["spec"]["template"]["spec"].get("imagePullSecrets", [])
+    if document["metadata"].get("namespace") == "inferscale-system":
+        assert {"name": "private-registry"} in refs
+    else:
+        assert {"name": "private-registry"} not in refs
+PY
+echo "private registry Secret rendering passed"

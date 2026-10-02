@@ -2,6 +2,7 @@ package runtime
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -33,6 +34,24 @@ func PullSecrets(name string) []corev1.LocalObjectReference {
 		return nil
 	}
 	return []corev1.LocalObjectReference{{Name: name}}
+}
+
+// WorkerSharedMemoryVolume gives GPU worker processes a Pod-local IPC backing
+// store instead of the container runtime's small default /dev/shm. The bound is
+// 2 GiB per allocated GPU (2/4/8 GiB for v1 TP1/2/4); tmpfs consumes host RAM only
+// as used. It never exposes the node's IPC namespace to a tenant workload.
+func WorkerSharedMemoryVolume(gpuCount int32) corev1.Volume {
+	return corev1.Volume{
+		Name: "shm",
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
+			Medium:    corev1.StorageMediumMemory,
+			SizeLimit: resource.NewQuantity(int64(gpuCount)*2*1024*1024*1024, resource.BinarySI),
+		}},
+	}
+}
+
+func WorkerSharedMemoryMount() corev1.VolumeMount {
+	return corev1.VolumeMount{Name: "shm", MountPath: "/dev/shm"}
 }
 
 // WorkerDrainLifecycle delays SIGTERM with Kubernetes' native sleep lifecycle

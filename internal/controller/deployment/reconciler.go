@@ -502,6 +502,9 @@ func (r *Reconciler) defaults() {
 	if r.Router.Config.MonitoringNamespace == "" {
 		r.Router.Config.MonitoringNamespace = r.Config.MonitoringNamespace
 	}
+	if r.Router.Config.OTLPEndpoint == "" {
+		r.Router.Config.OTLPEndpoint = r.Config.OTLPEndpoint
+	}
 }
 
 func (r *Reconciler) planRoute(

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "qualification": "pending",
+  "envoyGateway": {
+    "version": "v1.8.1",
+    "manifestURL": "https://github.com/envoyproxy/gateway/releases/download/v1.8.1/install.yaml",
+    "manifestSHA256": "d1bf4e4854c4f701cd8dc676d0a110a43b6c64cefee15fdf5c305ecdf8bcce5b",
+    "manifestControllerImage": "envoyproxy/gateway:v1.8.1"
+  },
+  "aiGateway": {
+    "version": "v0.7.0",
+    "archiveURL": "https://github.com/envoyproxy/ai-gateway/archive/refs/tags/v0.7.0.tar.gz",
+    "archiveSHA256": "f553e6d4de2c6bcf314ee5753094b0b9ceb36193c824a3e86269dc4ad1fd42f1",
+    "extProcImage": "docker.io/envoyproxy/ai-gateway-extproc:v0.7.0@sha256:7d18fdcbec0bc98f161827ff1b3a6523a86c5871c73891e42650b2b976113b29"
+  }
+}

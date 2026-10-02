@@ -3,6 +3,7 @@ package admission
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -31,6 +32,7 @@ func TestCheckContinuesW3CTraceWithoutRecordingRequestBody(t *testing.T) {
 
 	request := checkRequest("Bearer secret-api-key")
 	request.Attributes.Request.Http.Headers["traceparent"] = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	request.Attributes.Request.Http.Headers["baggage"] = "prompt=secret,credential=secret-api-key"
 	request.Attributes.Request.Http.RawBody = []byte(`{"model":"chat","messages":[{"role":"user","content":"secret prompt"}]}`)
 	server := NewServer(fakeAuthenticator{}, fakeAuthorizer{active: true}, fakeLimiter{allowed: true})
 	response, err := server.Check(context.Background(), request)
@@ -45,6 +47,14 @@ func TestCheckContinuesW3CTraceWithoutRecordingRequestBody(t *testing.T) {
 	}
 	if traceparent == "" {
 		t.Fatal("admission did not propagate the accepted trace context downstream")
+	}
+	if !slices.Contains(response.GetOkResponse().GetHeadersToRemove(), "baggage") {
+		t.Fatal("admission did not remove the original client baggage header")
+	}
+	for _, header := range response.GetOkResponse().GetHeaders() {
+		if strings.EqualFold(header.GetHeader().GetKey(), "baggage") {
+			t.Fatal("admission reinjected client baggage")
+		}
 	}
 	spans := recorder.Ended()
 	if len(spans) != 1 || spans[0].Parent().TraceID().String() != "4bf92f3577b34da6a3ce929d0e0e4736" {

@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inferscale-gpu-profile
+  namespace: inferscale-system
+data:
+  provider: vast
+  expected_gpu_sku: RTX_5090
+  expected_gpu_count: "8"
+  # v1 tensor parallelism remains limited to one, two, or four GPUs per worker.
+  # Eight GPUs provide room for replicas and stable/candidate overlap.
+  supported_tensor_parallelism: "1,2,4"

@@ -234,12 +234,12 @@ var requiredBenchmarkTelemetry = map[string]struct{}{
 
 func validateTelemetryEvidence(raw any, run Run) error {
 	evidence, ok := raw.(map[string]any)
-	if !ok || len(evidence) != 5 {
+	if !ok || len(evidence) != 6 {
 		return fmt.Errorf("%w: complete telemetry_evidence is required", ErrInvalidReport)
 	}
 	for field := range evidence {
 		switch field {
-		case "valid", "required_queries", "expected_gpu_count", "expected_gpu_sku", "observed_gpus":
+		case "valid", "required_queries", "expected_gpu_count", "expected_gpu_sku", "observed_gpus", "prefix_cache_enabled":
 		default:
 			return fmt.Errorf("%w: unsupported telemetry_evidence field %s", ErrInvalidReport, field)
 		}
@@ -247,6 +247,10 @@ func validateTelemetryEvidence(raw any, run Run) error {
 	valid, ok := evidence["valid"].(bool)
 	if !ok || !valid {
 		return fmt.Errorf("%w: telemetry evidence is not valid", ErrInvalidReport)
+	}
+	prefixCacheEnabled, ok := evidence["prefix_cache_enabled"].(bool)
+	if !ok || prefixCacheEnabled != run.Serving.PrefixCaching {
+		return fmt.Errorf("%w: telemetry prefix-cache setting does not match the serving contract", ErrInvalidReport)
 	}
 	count, ok := evidence["expected_gpu_count"].(float64)
 	if !ok || count != float64(run.Serving.GPUCount) {
@@ -256,8 +260,16 @@ func validateTelemetryEvidence(raw any, run Run) error {
 	if !ok || sku != run.Serving.GPUSKU {
 		return fmt.Errorf("%w: telemetry GPU SKU does not match the serving contract", ErrInvalidReport)
 	}
+	required := requiredBenchmarkTelemetry
+	if prefixCacheEnabled {
+		required = make(map[string]struct{}, len(requiredBenchmarkTelemetry)+1)
+		for query := range requiredBenchmarkTelemetry {
+			required[query] = struct{}{}
+		}
+		required["prefix_cache_hit_ratio"] = struct{}{}
+	}
 	queries, ok := evidence["required_queries"].([]any)
-	if !ok || len(queries) != len(requiredBenchmarkTelemetry) {
+	if !ok || len(queries) != len(required) {
 		return fmt.Errorf("%w: telemetry required-query evidence is incomplete", ErrInvalidReport)
 	}
 	seenQueries := make(map[string]struct{}, len(queries))
@@ -266,7 +278,7 @@ func validateTelemetryEvidence(raw any, run Run) error {
 		if !ok {
 			return fmt.Errorf("%w: telemetry query identity is invalid", ErrInvalidReport)
 		}
-		if _, required := requiredBenchmarkTelemetry[query]; !required {
+		if _, required := required[query]; !required {
 			return fmt.Errorf("%w: unsupported telemetry query %s", ErrInvalidReport, query)
 		}
 		if _, duplicate := seenQueries[query]; duplicate {

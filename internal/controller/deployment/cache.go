@@ -175,7 +175,7 @@ func (r *Reconciler) reconcileModelCache(
 	if complete {
 		setCondition(resource, conditionModelCached, metav1.ConditionTrue, "CacheVerified", "model cache passed full manifest verification", now)
 		if !cacheVerificationTime(observed).Add(cacheVerificationInterval).After(now) {
-			if err := r.deleteModelCacheVerifier(ctx, observed); err != nil {
+			if err := r.deleteModelCacheJob(ctx, observed); err != nil {
 				return false, ctrl.Result{}, fmt.Errorf("replace stale model-cache verification Job: %w", err)
 			}
 		}
@@ -196,7 +196,7 @@ func (r *Reconciler) handleFailedCacheVerification(
 	}
 	if role == cacheRepairStaleVerification || role == cacheRepairComplete {
 		if observed.DeletionTimestamp.IsZero() {
-			if err := r.deleteModelCacheVerifier(ctx, observed); err != nil {
+			if err := r.deleteModelCacheJob(ctx, observed); err != nil {
 				return false, ctrl.Result{}, fmt.Errorf("delete stale model-cache verifier: %w", err)
 			}
 		}
@@ -281,7 +281,7 @@ func (r *Reconciler) recoverCompletedCacheRepair(
 			return true, ctrl.Result{}, nil
 		}
 		if observedVerifier.DeletionTimestamp.IsZero() {
-			if err := r.deleteModelCacheVerifier(ctx, observedVerifier); err != nil {
+			if err := r.deleteModelCacheJob(ctx, observedVerifier); err != nil {
 				return false, ctrl.Result{}, fmt.Errorf("delete stale verifier after shared model-cache repair: %w", err)
 			}
 		}
@@ -345,7 +345,7 @@ func (r *Reconciler) reconcileModelCacheRepair(
 	err = r.Get(ctx, client.ObjectKeyFromObject(verifier), observedVerifier)
 	if err == nil {
 		if observedVerifier.DeletionTimestamp.IsZero() {
-			if err := r.deleteModelCacheVerifier(ctx, observedVerifier); err != nil {
+			if err := r.deleteModelCacheJob(ctx, observedVerifier); err != nil {
 				return false, ctrl.Result{}, fmt.Errorf("delete failed model-cache verifier after drain: %w", err)
 			}
 		}
@@ -376,7 +376,7 @@ func (r *Reconciler) reconcileModelCacheRepair(
 	if observedPrefetch.Annotations[annotationCacheRepairJob] != cacheKey ||
 		observedPrefetch.Annotations[annotationCacheRepairEpoch] != repairEpoch {
 		if observedPrefetch.DeletionTimestamp.IsZero() {
-			if err := r.Delete(ctx, observedPrefetch); err != nil && !apierrors.IsNotFound(err) {
+			if err := r.deleteModelCacheJob(ctx, observedPrefetch); err != nil {
 				return false, ctrl.Result{}, fmt.Errorf("delete stale model prefetch after drain: %w", err)
 			}
 		}
@@ -389,7 +389,7 @@ func (r *Reconciler) reconcileModelCacheRepair(
 	if failed {
 		setCondition(resource, conditionModelCached, metav1.ConditionFalse, "ModelDownloadFailed", cacheFailureMessage("model-cache repair failed", message), now)
 		statusErr := r.persistStatus(ctx, resource, now)
-		deleteErr := client.IgnoreNotFound(r.Delete(ctx, observedPrefetch))
+		deleteErr := r.deleteModelCacheJob(ctx, observedPrefetch)
 		return false, ctrl.Result{RequeueAfter: cacheRepairRetryInterval}, errors.Join(statusErr, deleteErr)
 	}
 	if !complete {

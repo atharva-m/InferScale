@@ -49,6 +49,7 @@ def test_publishable_telemetry_requires_exact_gpu_inventory() -> None:
     snapshot: dict[str, object] = {
         name: [{"value": [timestamp, "0"]}] for name in PUBLISHABLE_REQUIRED_QUERIES
     }
+    snapshot["prefix_cache_hit_ratio"] = [{"value": [timestamp, "0"]}]
     snapshot["gpu_inventory"] = [
         {
             "metric": {
@@ -62,6 +63,12 @@ def test_publishable_telemetry_requires_exact_gpu_inventory() -> None:
     ]
     evidence = validate_publishable_telemetry(snapshot, 1, "RTX_5090", interval)
     assert evidence["valid"] is True
+    disabled_snapshot = dict(snapshot)
+    disabled_snapshot.pop("prefix_cache_hit_ratio")
+    disabled_evidence = validate_publishable_telemetry(
+        disabled_snapshot, 1, "RTX_5090", interval, prefix_cache_enabled=False
+    )
+    assert disabled_evidence["valid"] is True
     with pytest.raises(ValueError, match="accelerator count"):
         validate_publishable_telemetry(snapshot, 2, "RTX_5090", interval)
     # A fresh instant value after the run is not evidence of its workload.
@@ -84,6 +91,7 @@ def test_prometheus_queries_are_revision_scoped() -> None:
         "waiting_requests",
         "running_requests",
         "kv_cache_utilization",
+        "prefix_cache_hit_ratio",
         "gpu_inventory",
     ):
         assert 'namespace="tenant-a"' in queries[name]
@@ -136,7 +144,7 @@ def test_collection_uses_run_end_after_reporting_delay(
         runtime_pod_prefix="runtime-a",
         epp_service="epp-a",
     )
-    assert len(requested) == 8
+    assert len(requested) == 9
     assert snapshot["gpu_utilization"] == [{"value": [1030, "85"]}]
 
 

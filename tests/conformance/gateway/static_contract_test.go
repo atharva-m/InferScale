@@ -253,7 +253,7 @@ func assertInferencePoolContract(t *testing.T, objects []client.Object) {
 	}
 	profiles := config["schedulingProfiles"].([]any)
 	plugins := profiles[0].(map[string]any)["plugins"].([]any)
-	if len(plugins) != 2 {
+	if len(plugins) != 4 {
 		t.Fatalf("EPP scheduling profile plugins=%v", plugins)
 	}
 	for _, plugin := range plugins {

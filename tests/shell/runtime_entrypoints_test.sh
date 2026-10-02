@@ -99,6 +99,7 @@ trt_capture="${test_root}/trt.args"
 env \
   PATH="${fake_bin}:/usr/bin:/bin" \
   CAPTURE_FILE="${trt_capture}" \
+  TMPDIR="${test_root}" \
   ENGINE_PATH="${test_root}/engine" \
   TOKENIZER_PATH="${test_root}/tokenizer" \
   TP_SIZE=4 \
@@ -107,6 +108,7 @@ env \
   PRECISION=bf16 \
   QUANTIZATION=none \
   MAX_MODEL_LEN=8192 \
+  PREFIX_CACHING=true \
   RUNTIME_VERSION=1.0.0 \
   RUNTIME_IMAGE_DIGEST=sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd \
   GPU_ARCHITECTURE=RTX_5090 \
@@ -114,8 +116,14 @@ env \
   PORT=8000 \
   bash "${repo_root}/runtime/trtllm/entrypoint.sh"
 
-expected=("${test_root}/engine" --backend trt --tokenizer "${test_root}/tokenizer" --host 0.0.0.0 --port 8000 --tp_size 4)
 mapfile -t actual <"${trt_capture}"
+served_engine_path="${actual[0]}"
+options_path="${actual[-1]}"
+test "$(basename "${served_engine_path}")" = qwen-chat
+test -L "${served_engine_path}"
+test "$(readlink -f "${served_engine_path}")" = "${test_root}/engine"
+grep -Fx '  enable_block_reuse: true' "${options_path}" >/dev/null
+expected=("${served_engine_path}" --backend trt --tokenizer "${test_root}/tokenizer" --host 0.0.0.0 --port 8000 --tp_size 4 --max_seq_len 8192 --extra_llm_api_options "${options_path}")
 [[ "${actual[*]}" == "${expected[*]}" ]]
 
 cat >"${fake_bin}/python3" <<'SCRIPT'
@@ -197,14 +205,16 @@ serve_built_engine() {
   env \
     PATH="${fake_bin}:/usr/bin:/bin" \
     CAPTURE_FILE="${trt_capture}" \
+    TMPDIR="${test_root}" \
     ENGINE_PATH="${engine_output}" \
     TOKENIZER_PATH="${test_root}/tokenizer" \
     TP_SIZE=2 \
-    SERVED_MODEL_NAME=qwen-chat \
+    SERVED_MODEL_NAME="${TEST_SERVED_MODEL_NAME:-qwen-chat}" \
     MODEL_REVISION=cccccccccccccccccccccccccccccccccccccccc \
     PRECISION=bf16 \
     QUANTIZATION=none \
     MAX_MODEL_LEN=8192 \
+    PREFIX_CACHING="${TEST_PREFIX_CACHING:-false}" \
     RUNTIME_VERSION=1.0.0 \
     RUNTIME_IMAGE_DIGEST=sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd \
     GPU_ARCHITECTURE=RTX_5090 \
@@ -214,6 +224,19 @@ serve_built_engine() {
 }
 
 serve_built_engine
+mapfile -t actual <"${trt_capture}"
+test "$(basename "${actual[0]}")" = qwen-chat
+test "$(readlink -f "${actual[0]}")" = "${engine_output}"
+grep -Fx '  enable_block_reuse: false' "${actual[-1]}" >/dev/null
+
+if TEST_SERVED_MODEL_NAME=../escape serve_built_engine 2>/dev/null; then
+  echo 'TensorRT runtime accepted a model name that escapes its private directory' >&2
+  exit 1
+fi
+if TEST_PREFIX_CACHING=yes serve_built_engine 2>/dev/null; then
+  echo 'TensorRT runtime accepted an ambiguous prefix-cache setting' >&2
+  exit 1
+fi
 printf '{"corrupt-again":true}\n' >"${engine_output}/config.json"
 if serve_built_engine 2>/dev/null; then
   echo 'TensorRT runtime accepted a post-build-corrupt engine' >&2
